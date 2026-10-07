@@ -46,6 +46,8 @@ export interface SettingsState {
   defaultClef: 'treble' | 'bass';
   /** Scanned sheet music is written for guitar (sounds an octave lower than printed). Applied to treble staves only, never inside a piano grand staff or a system with a bass-clef staff. */
   guitarOctave: boolean;
+  /** Play the chord accompaniment during playback */
+  playChords: boolean;
 }
 
 export interface AppState {
@@ -118,7 +120,7 @@ const defaultView: ViewState = {
   mode: 'tab',
   zoom: 1,
 };
-const defaultSettings: SettingsState = { chordResolution: 'half', defaultClef: 'treble', guitarOctave: true };
+const defaultSettings: SettingsState = { chordResolution: 'half', defaultClef: 'treble', guitarOctave: true, playChords: true };
 
 function safeAssign(score: Score, guitar: GuitarConfig): Score {
   try {

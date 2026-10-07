@@ -1,7 +1,9 @@
 /** Web Audio sampled-guitar player with lookahead scheduling. Browser only; do not import in unit tests except for pure helpers. */
 import { guitarTrack, ticksToSeconds, timeSignatureAt } from '../core';
-import type { GuitarConfig, Score } from '../core';
+import type { GuitarConfig, Score, Tuning } from '../core';
 import { loadSamples, nearestSample } from './samples';
+import { buildChordEvents } from './chordEvents';
+import type { ChordEvent } from '../chords/detect';
 
 export interface PlayOptions {
   fromTick?: number;
@@ -10,6 +12,9 @@ export interface PlayOptions {
   onEnd?: () => void;
   metronome?: boolean;
   loop?: { from: number; to: number };
+  /** chord accompaniment (strummed on the sampled guitar); omit for melody only */
+  chords?: ChordEvent[];
+  chordGain?: number;
 }
 
 /** Inverse of `ticksToSeconds` (tempo-map aware). */
@@ -30,7 +35,7 @@ export function secondsToTicks(score: Score, seconds: number): number {
   return 0;
 }
 
-interface PlayEvent {
+export interface PlayEvent {
   /** start in unscaled music seconds */
   t: number;
   /** duration in music seconds */
@@ -38,6 +43,8 @@ interface PlayEvent {
   pitch: number;
   gain: number;
   click?: 'accent' | 'normal';
+  /** strummed accompaniment voice */
+  chord?: boolean;
 }
 
 interface Base {
@@ -59,7 +66,12 @@ const MIN_DUR = 0.08;
 const MAX_RING = 1.5;
 
 /** Build the sorted event list (notes with ties merged, plus optional metronome clicks). */
-export function buildEvents(score: Score, metronome: boolean, extraEndTick = 0): { events: PlayEvent[]; endSec: number } {
+export function buildEvents(
+  score: Score,
+  metronome: boolean,
+  extraEndTick = 0,
+  opts: { chords?: ChordEvent[]; chordGain?: number; tuning?: Tuning } = {},
+): { events: PlayEvent[]; endSec: number } {
   const track = guitarTrack(score);
   const notes = (track ? track.notes : score.tracks.flatMap((t) => t.notes)).slice().sort((a, b) => a.start - b.start);
   type Merged = { start: number; end: number; pitch: number; velocity: number };
@@ -83,6 +95,11 @@ export function buildEvents(score: Score, metronome: boolean, extraEndTick = 0):
     const t = ticksToSeconds(score, m.start);
     return { t, dur: ticksToSeconds(score, m.end) - t, pitch: m.pitch, gain: Math.pow(Math.max(1, m.velocity) / 127, 1.3) };
   });
+  if (opts.chords && opts.chords.length > 0) {
+    const built = buildChordEvents(score, opts.chords, { chordGain: opts.chordGain, tuning: opts.tuning });
+    events.push(...built.events);
+    endTick = Math.max(endTick, built.endTick);
+  }
   const endSec = ticksToSeconds(score, endTick);
   if (metronome) {
     const limit = Math.max(endTick, extraEndTick);
@@ -210,7 +227,7 @@ export class Player {
     this.scale = s;
   }
 
-  play(score: Score, _guitar: GuitarConfig, opts: PlayOptions = {}): void {
+  play(score: Score, guitar: GuitarConfig, opts: PlayOptions = {}): void {
     this.stopInternal(false);
     const token = ++this.token;
     this.score = score;
@@ -219,7 +236,11 @@ export class Player {
     const loopFrom = opts.loop ? ticksToSeconds(score, opts.loop.from) : 0;
     const loopTo = opts.loop ? ticksToSeconds(score, opts.loop.to) : 0;
     this.loopSec = opts.loop && loopTo > loopFrom ? { from: loopFrom, to: loopTo } : null;
-    const built = buildEvents(score, !!opts.metronome, opts.loop?.to ?? 0);
+    const built = buildEvents(score, !!opts.metronome, opts.loop?.to ?? 0, {
+      chords: opts.chords,
+      chordGain: opts.chordGain,
+      tuning: guitar?.tuning,
+    });
     this.events = built.events;
     this.endSec = built.endSec;
     this.pausedMusic = ticksToSeconds(score, Math.max(0, opts.fromTick ?? 0));

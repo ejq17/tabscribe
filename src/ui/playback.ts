@@ -1,6 +1,7 @@
 import type { Player } from '../audio';
 import { scoreLength } from '../core';
 import { useStore } from '../store';
+import type { ChordEvent } from '../chords';
 import { useAudioUi } from './uiStore';
 
 let playerPromise: Promise<Player> | null = null;
@@ -30,11 +31,14 @@ export function peekPlayer(): Player | null {
   return player;
 }
 
+/** Player options plus the chord list for the accompaniment (forwarded to buildEvents). */
+type PlayOpts = Parameters<Player['play']>[2] & { chords?: ChordEvent[] };
+
 export async function startPlayback(fromTick?: number): Promise<void> {
   const st = useStore.getState();
   if (!st.score) return;
   const p = await getPlayer();
-  const { score, guitar, playback } = useStore.getState();
+  const { score, guitar, playback, settings, chords } = useStore.getState();
   if (!score) return;
   const end = scoreLength(score);
   let from = fromTick ?? playback.tick;
@@ -42,7 +46,7 @@ export async function startPlayback(fromTick?: number): Promise<void> {
   if (playback.loop && (from < playback.loop.from || from >= playback.loop.to)) from = playback.loop.from;
   p.stop();
   useStore.getState().setPlayback({ isPlaying: true, tick: from });
-  p.play(score, guitar, {
+  const opts: PlayOpts = {
     fromTick: from,
     tempoScale: playback.tempoScale,
     metronome: playback.metronome,
@@ -52,7 +56,9 @@ export async function startPlayback(fromTick?: number): Promise<void> {
       const pb = useStore.getState().playback;
       useStore.getState().setPlayback({ isPlaying: false, tick: pb.loop?.from ?? 0 });
     },
-  });
+    chords: settings.playChords ? chords : undefined,
+  };
+  p.play(score, guitar, opts);
 }
 
 export function pausePlayback(): void {

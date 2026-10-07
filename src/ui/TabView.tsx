@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useStore } from '../store';
 import { guitarNotes } from '../store/ops';
-import { LINE_GAP, layoutTab, xToTick, type MeasureLayout, type SystemLayout } from './tabLayout';
+import { LINE_GAP, layoutTab, measureClickTick, type MeasureLayout, type SystemLayout } from './tabLayout';
 import TabSystems, { notePos } from './TabSystems';
 import Playhead from './Playhead';
 import NoteEditor from './NoteEditor';
 import { useWidth } from './useWidth';
 import { useUi } from './uiStore';
+import { seekTo } from './playback';
 
 export default function TabView() {
   const score = useStore((s) => s.score);
@@ -28,6 +29,8 @@ export default function TabView() {
 
   const onNoteClick = useCallback((id: string, additive: boolean) => {
     const st = useStore.getState();
+    const n = st.score ? guitarNotes(st.score).find((x) => x.id === id) : undefined;
+    if (n) void seekTo(n.start).catch(() => {});
     if (additive) st.setSelection(st.selection.includes(id) ? st.selection.filter((x) => x !== id) : [...st.selection, id]);
     else st.setSelection([id]);
     st.setCursor(null);
@@ -45,9 +48,8 @@ export default function TabView() {
       const y = (e.clientY - r.top) * k;
       const nStr = st.guitar.tuning.pitches.length;
       const string = Math.max(0, Math.min(nStr - 1, Math.round((y - sys.staffTop) / LINE_GAP)));
-      const grid = st.score.ppq / 4;
-      let tick = Math.round(xToTick(m, x) / grid) * grid;
-      tick = Math.max(m.measure.startTick, Math.min(m.measure.endTick - grid, tick));
+      const tick = measureClickTick(m, x, st.score.ppq);
+      if (!double) void seekTo(tick).catch(() => {});
       st.setCursor({ tick, string });
       if (!e.shiftKey) st.setSelection([]);
       if (double) {

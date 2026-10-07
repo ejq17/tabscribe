@@ -78,6 +78,13 @@ export function xToTick(m: MeasureLayout, x: number): number {
   return pts[pts.length - 1].tick;
 }
 
+/** Tick for a click at layout-x within a measure, snapped to the 16th grid and clamped inside the measure. */
+export function measureClickTick(m: MeasureLayout, x: number, ppq: number): number {
+  const grid = ppq / 4;
+  const t = Math.round(xToTick(m, x) / grid) * grid;
+  return Math.max(m.measure.startTick, Math.min(m.measure.endTick - grid, t));
+}
+
 export function findSystem(layout: TabLayout, tick: number): { sys: SystemLayout; m: MeasureLayout } | null {
   for (const sys of layout.systems) {
     if (tick >= sys.startTick && tick < sys.endTick) {

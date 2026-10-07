@@ -67,6 +67,9 @@ input[type='range'] { accent-color: var(--accent); }
 .source-page img { width: 100%; height: auto; border: 1px solid var(--line); background: #fff; }
 .src-box { position: absolute; border-radius: 3px; pointer-events: none; }
 .src-box.sel { border: 2px solid var(--accent-strong); background: rgba(224, 160, 48, 0.3); box-shadow: 0 0 0 3px rgba(224, 160, 48, 0.25); }
+.src-box.playing { border: 2px solid #1f9d55; background: rgba(31, 157, 85, 0.3); box-shadow: 0 0 0 3px rgba(31, 157, 85, 0.22); z-index: 2; }
+.src-box.playing.measure { background: rgba(31, 157, 85, 0.14); border-style: dashed; }
+.source-page { cursor: pointer; }
 .src-box.low { border: 1px dashed var(--accent); background: rgba(224, 160, 48, 0.14); }
 
 /* ---------- tab svg ---------- */

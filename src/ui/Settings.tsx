@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { TUNINGS, midiToName, nameToMidi } from '../core';
 import { useStore } from '../store';
+import { restartIfPlaying } from './playback';
 import { useUi } from './uiStore';
 
 function CustomTuning() {
@@ -149,6 +150,21 @@ export default function Settings() {
               onChange={(e) => setSettings({ guitarOctave: e.target.checked })}
             />{' '}
             Sheet music is written for guitar (sounds an octave lower)
+          </label>
+        </section>
+
+        <section>
+          <h3>Playback</h3>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={settings.playChords}
+              onChange={(e) => {
+                setSettings({ playChords: e.target.checked });
+                restartIfPlaying();
+              }}
+            />{' '}
+            Play chord accompaniment
           </label>
         </section>
 
