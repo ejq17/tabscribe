@@ -19,18 +19,26 @@ export function analyzePage(img: RawImage, index: number, opts: RecognizeOptions
     // clip the region at the midpoint to vertical neighbours
     let y0 = -Infinity;
     let y1 = Infinity;
+    let limitTop = -Infinity;
+    let limitBottom = Infinity;
     for (let j = 0; j < staves.length; j++) {
       if (j === i) continue;
       const o = staves[j];
       if (o.right < staff.left || o.left > staff.right) continue;
-      if (o.bottom <= staff.top) y0 = Math.max(y0, (o.bottom + staff.top) / 2);
-      else if (o.top >= staff.bottom) y1 = Math.min(y1, (staff.bottom + o.top) / 2);
+      if (o.bottom <= staff.top) {
+        y0 = Math.max(y0, (o.bottom + staff.top) / 2);
+        limitTop = Math.max(limitTop, o.bottom + 0.6 * o.staffSpace);
+      } else if (o.top >= staff.bottom) {
+        y1 = Math.min(y1, (staff.bottom + o.top) / 2);
+        limitBottom = Math.min(limitBottom, o.top - 0.6 * o.staffSpace);
+      }
     }
-    const sym = analyzeStaff(pre.binary, staff, { defaultClef, y0, y1 });
+    const sym = analyzeStaff(pre.binary, staff, { defaultClef, y0, y1, limitTop, limitBottom });
     for (const w of sym.warnings) warnings.push(`Page ${index + 1}, staff ${i + 1}: ${w}`);
     symbols.push(sym);
     opts.onProgress?.({ stage: 'Reading notation', fraction: (i + 1) / staves.length, page: index });
   });
+  assignTuplets(staves, symbols);
   return {
     index,
     width: pre.binary.width,
@@ -41,6 +49,55 @@ export function analyzePage(img: RawImage, index: number, opts: RecognizeOptions
     symbols,
     warnings,
   };
+}
+
+/**
+ * A triplet bracket found near one staff belongs to the staff whose notes it spans: the one with the smallest gap
+ * between the bracket and the heads / stems under (or over) it. Brackets seen by two neighbouring staves are merged.
+ */
+function assignTuplets(staves: Staff[], symbols: StaffSymbols[]): void {
+  const cands: { x0: number; x1: number; n: number; y0: number; y1: number }[] = [];
+  for (const s of symbols) {
+    for (const c of s.tupletCands ?? []) {
+      if (!cands.some((o) => Math.abs(o.x0 - c.x0) < 3 && Math.abs(o.x1 - c.x1) < 3 && Math.abs(o.y0 - c.y0) < 3)) cands.push(c);
+    }
+  }
+  for (const c of cands) {
+    let best = -1;
+    let bestGap = Infinity;
+    symbols.forEach((s, j) => {
+      const d = staves[j].staffSpace;
+      let ymin = Infinity;
+      let ymax = -Infinity;
+      let count = 0;
+      for (const h of s.heads) {
+        if (h.cx < c.x0 - 0.3 * d || h.cx > c.x1 + 0.3 * d) continue;
+        count++;
+        ymin = Math.min(ymin, h.y0);
+        ymax = Math.max(ymax, h.y1);
+        if (h.stemId >= 0) {
+          const st = s.stems[h.stemId];
+          ymin = Math.min(ymin, st.top);
+          ymax = Math.max(ymax, st.bottom);
+        }
+      }
+      for (const r of s.rests) {
+        const cx = (r.x0 + r.x1) / 2;
+        if (cx < c.x0 - 0.3 * d || cx > c.x1 + 0.3 * d) continue;
+        count++;
+        ymin = Math.min(ymin, r.y0);
+        ymax = Math.max(ymax, r.y1);
+      }
+      if (count === 0) return;
+      const gap = c.y1 <= ymin ? ymin - c.y1 : c.y0 >= ymax ? c.y0 - ymax : 0;
+      // the bracket hugs its notes: within about four staff spaces of the nearest head / stem
+      if (gap <= 4.2 * d && gap < bestGap) {
+        bestGap = gap;
+        best = j;
+      }
+    });
+    if (best >= 0) (symbols[best].tuplets ??= []).push({ x0: c.x0, x1: c.x1, n: c.n });
+  }
 }
 
 function boxOf(page: PageResult, x0: number, y0: number, x1: number, y1: number): OmrBox {
@@ -137,7 +194,7 @@ export function assembleScore(pages: PageResult[], ppq = 480): Score {
   let clippedCount = 0;
   let slashMeasures = 0;
   let pendingTie = new Map<string, number>();
-  const pageWarned = { clef: new Set<number>(), ts: new Set<number>(), mr: new Set<number>() };
+  const pageWarned = { clef: new Set<number>(), ts: new Set<number>() };
 
   for (let sIdx = 0; sIdx < sysInfos.length; sIdx++) {
     const si = sysInfos[sIdx];
@@ -180,12 +237,16 @@ export function assembleScore(pages: PageResult[], ppq = 480): Score {
       return sym.clef;
     });
     for (const sym of syms) {
-      for (const mr of sym.multiRests ?? []) {
-        if (mr.guessed && !pageWarned.mr.has(si.page.index)) {
-          pageWarned.mr.add(si.page.index);
-          warnings.push(`Page ${si.page.index + 1}: a multi-measure rest count could not be read; counted as 1 measure.`);
-        }
-      }
+      const mrs = sym.multiRests ?? [];
+      mrs.forEach((mr) => {
+        if (!mr.guessed) return;
+        // bar number: first bar of this system + barlines before the rest + extra bars of earlier multi-measure rests
+        const centre = (mr.x0 + mr.x1) / 2;
+        const slot = sym.barlines.filter((b) => b < centre).length;
+        let extra = 0;
+        for (const o of mrs) if (o !== mr && (o.x0 + o.x1) / 2 < centre) extra += Math.max(0, o.count - 1);
+        warnings.push(`Page ${si.page.index + 1}: the multi-measure rest at measure ${measureNo + slot + extra + 1} has no readable count; counted as 1 measure.`);
+      });
     }
     const nextPending = new Map<string, number>();
     const firstDone = new Set<string>();
@@ -234,7 +295,7 @@ export function assembleScore(pages: PageResult[], ppq = 480): Score {
             };
             if (h.tiedFromPrevious) note.tiedFromPrevious = true;
             if (isFirstCluster && pendingTie.get(ckey) === p.midi) note.tiedFromPrevious = true;
-            if (sym.tieOut === h) nextPending.set(ckey, p.midi);
+            if (sym.tieOut === h || sym.tieOuts?.includes(h)) nextPending.set(ckey, p.midi);
             track.notes.push(note);
             boxes[id] = [boxOf(si.page, h.x0, h.y0, h.x1, h.y1)];
           });

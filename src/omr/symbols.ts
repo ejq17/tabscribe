@@ -1,5 +1,7 @@
 import type { AccidentalKind, Binary, ClefKind, Notehead, RestKind, RestSym, Staff, StaffSymbols, StemInfo } from './types';
 import { lineY, removeStaffLines } from './staves';
+import { detectAccidentals } from './accidentals';
+import { detectTies } from './ties';
 import { findHollowHeads, findMultiRestBars, findStrokes, readKeySignature, type GImg } from './glyphs';
 
 /** Local crop of the page with its page-coordinate origin. */
@@ -377,6 +379,100 @@ export interface AnalyzeOptions {
   /** y-extents (page coords) this staff owns (clipped against neighbouring staves) */
   y0: number;
   y1: number;
+  /** outer vertical limits (bottom of the staff above / top of the staff below) for far-away marks such as tuplet brackets */
+  limitTop?: number;
+  limitBottom?: number;
+}
+
+/** Read one digit component (0-9) with the topological classifier; -1 when unsure. */
+function readDigitComp(labels: Int32Array, W: number, c: Comp): number {
+  const w = c.x1 - c.x0 + 1;
+  const h = c.y1 - c.y0 + 1;
+  const g = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) g[y * w + x] = labels[(c.y0 + y) * W + c.x0 + x] === c.id ? 1 : 0;
+  const v = classifyDigit(g, w, h);
+  if (v !== 3) return v;
+  // a "3" bulges to the right at both the top and the bottom (an accent chevron ">" only has its apex in the middle)
+  const band = Math.max(1, Math.round(0.3 * h));
+  const fillRight = (ya: number, yb: number): number => {
+    let n = 0;
+    let t = 0;
+    for (let y = ya; y < yb; y++)
+      for (let x = Math.floor(0.55 * w); x < w; x++) {
+        t++;
+        n += g[y * w + x];
+      }
+    return t ? n / t : 0;
+  };
+  const midFill = (() => {
+    let n = 0;
+    let t = 0;
+    for (let y = Math.floor(0.4 * h); y < Math.ceil(0.6 * h); y++)
+      for (let x = 0; x < Math.floor(0.3 * w); x++) {
+        t++;
+        n += g[y * w + x];
+      }
+    return t ? n / t : 0;
+  })();
+  return fillRight(0, band) >= 0.3 && fillRight(h - band, h) >= 0.3 && midFill <= 0.5 ? 3 : -1;
+}
+
+/**
+ * Triplet brackets: a thin horizontal line with a tick at each end and a "3" in a gap in its middle (or just above /
+ * below it). Returns the x extent (local coordinates) of every bracket found, above or below the staff.
+ */
+function findTupletBrackets(comps: Comp[], labels: Int32Array, W: number, d: number, topL: number, botL: number, minX: number, avoid: { x0: number; x1: number }[]): { brackets: { x0: number; x1: number; n: number; y0: number; y1: number }[]; loose: { cx: number; y0: number; y1: number; above: boolean }[] } {
+  const out: { x0: number; x1: number; n: number; y0: number; y1: number }[] = [];
+  const loose: { cx: number; y0: number; y1: number; above: boolean }[] = [];
+  const ww = (c: Comp) => c.x1 - c.x0 + 1;
+  const hh = (c: Comp) => c.y1 - c.y0 + 1;
+  const digits = comps.filter(
+    (c) => c.x0 >= minX && !avoid.some((a) => c.x1 >= a.x0 && c.x0 <= a.x1) && hh(c) >= 0.55 * d && hh(c) <= 1.9 * d && ww(c) >= 0.3 * d && ww(c) <= 1.4 * d && (c.y1 < topL - 0.2 * d || c.y0 > botL + 0.2 * d) && c.area >= 0.12 * d * d,
+  );
+  const pieces = comps.filter((c) => c.x0 >= minX - 2 * d && ww(c) >= 0.9 * d && hh(c) >= 0.35 * d && hh(c) <= 1.7 * d && c.area / (ww(c) * hh(c)) <= 0.55 && (c.y1 < topL - 0.2 * d || c.y0 > botL + 0.2 * d));
+  if (digits.length === 0) return { brackets: out, loose };
+  // vertical ink run at the end of a piece (a bracket tick), looking from the line row away from it
+  const tickAt = (p: Comp, x: number, dir: 1 | -1): number => {
+    let best = 0;
+    for (let xx = x - 1; xx <= x + 1; xx++) {
+      let n = 0;
+      for (let yy = dir > 0 ? p.y0 : p.y1; yy >= p.y0 && yy <= p.y1; yy += dir) {
+        if (labels[yy * W + xx] === p.id) n++;
+        else if (n > 0) break;
+      }
+      if (n > best) best = n;
+    }
+    return best;
+  };
+  const tickEnds = (p: Comp, side: 'l' | 'r'): boolean => {
+    const x = side === 'l' ? p.x0 + 1 : p.x1 - 1;
+    // ticks hang down from an upper bracket (the line is the top row) and rise from a lower one
+    return tickAt(p, x, 1) >= 0.4 * d || tickAt(p, x, -1) >= 0.4 * d;
+  };
+  for (const g of digits) {
+    if (readDigitComp(labels, W, g) !== 3) continue;
+    const gcy = (g.y0 + g.y1) / 2;
+    const near = (p: Comp) => Math.min(Math.abs(p.y0 - gcy), Math.abs(p.y1 - gcy)) <= 0.9 * d;
+    // broken bracket: a piece left of the digit and one right of it
+    const L = pieces
+      .filter((p) => near(p) && p.x1 <= g.x0 + 0.3 * d && p.x1 >= g.x0 - 1.8 * d && tickEnds(p, 'l'))
+      .sort((a, b) => b.x1 - a.x1)[0];
+    const R = pieces
+      .filter((p) => near(p) && p.x0 >= g.x1 - 0.3 * d && p.x0 <= g.x1 + 1.8 * d && tickEnds(p, 'r'))
+      .sort((a, b) => a.x0 - b.x0)[0];
+    if (L && R) {
+      out.push({ x0: L.x0, x1: R.x1, n: 3, y0: Math.min(L.y0, R.y0), y1: Math.max(L.y1, R.y1) });
+      continue;
+    }
+    const loneAbove = g.y1 < topL;
+    // continuous bracket with the digit just above / below its middle
+    const C = pieces.find(
+      (p) => ww(p) >= 2.0 * d && p.x0 <= g.x0 && p.x1 >= g.x1 && tickEnds(p, 'l') && tickEnds(p, 'r') && (Math.abs(g.y1 - p.y0) <= 1.6 * d || Math.abs(g.y0 - p.y1) <= 1.6 * d),
+    );
+    if (C) out.push({ x0: C.x0, x1: C.x1, n: 3, y0: C.y0, y1: C.y1 });
+    else if (hh(g) <= 1.6 * d && !comps.some((o) => o !== g && o.x1 >= g.x0 - 0.9 * d && o.x0 <= g.x1 + 0.9 * d && o.y1 >= g.y0 - 0.8 * d && o.y0 <= g.y1 + 0.8 * d)) loose.push({ cx: (g.x0 + g.x1) / 2, y0: g.y0, y1: g.y1, above: loneAbove });
+  }
+  return { brackets: out, loose };
 }
 
 export function cropBinary(b: Binary, x0: number, y0: number, x1: number, y1: number): Binary {
@@ -787,7 +883,7 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
   const multiRests: { x0: number; x1: number; count: number; guessed: boolean }[] = [];
   const mrIds = new Set<number>();
   {
-    const bars = findMultiRestBars({ w: W, h: H, d: src.d }, d, t, midL, lx(staff.left), lx(staff.right)).filter((b) => b.x0 > musicStart - 0.2 * d);
+    const bars = findMultiRestBars({ w: W, h: H, d: src.d }, d, t, midL, lx(staff.left), lx(staff.right)).filter((b) => b.x0 > musicStart - 0.2 * d && b.x1 - b.x0 >= 4.5 * d); // shorter thick bars are beams
     for (const b of bars) {
       // skip bars made of a beam/tie: require the bar not to be attached to noteheads (few comps overlap its row band)
       let count = 1;
@@ -828,6 +924,36 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
     }
   }
 
+  // ---- tuplet brackets ("3" in a gap of a thin bracket with end ticks)
+  const tupletScan = (() => {
+    // own crop that reaches further above / below the staff than the symbol crop (brackets sit 5+ spaces away and the
+    // symbol crop is clipped at the midpoint to the neighbouring staff); the staff body itself is blanked
+    const by0 = Math.max(0, Math.floor(Math.max(opts.limitTop ?? -Infinity, staff.top - 8.5 * d)));
+    const by1 = Math.min(bin.height, Math.ceil(Math.min(opts.limitBottom ?? Infinity, staff.bottom + 8.5 * d)));
+    const bc = cropBinary(bin, rx0, by0, rx1, by1);
+    const none = { brackets: [] as { x0: number; x1: number; n: number; y0: number; y1: number }[], loose: [] as { cx: number; y0: number; y1: number; above: boolean }[] };
+    if (bc.width < 8 || bc.height < 8) return none;
+    for (let yy = Math.max(0, Math.floor(staff.top - 0.4 * d - by0)); yy <= Math.min(bc.height - 1, Math.ceil(staff.bottom + 0.4 * d - by0)); yy++) bc.data.fill(0, yy * bc.width, (yy + 1) * bc.width);
+    const lc = labelComponents(bc.width, bc.height, bc.data);
+    const r = findTupletBrackets(
+      lc.comps,
+      lc.labels,
+      bc.width,
+      d,
+      staff.top - by0,
+      staff.bottom - by0,
+      musicStart,
+      multiRests.map((m) => ({ x0: m.x0 - rx0, x1: m.x1 - rx0 })),
+    );
+    return {
+      brackets: r.brackets.map((b) => ({ x0: b.x0 + rx0, x1: b.x1 + rx0, n: b.n, y0: b.y0 + by0, y1: b.y1 + by0 })),
+      // digits without a bracket: local x, page y
+      loose: r.loose.map((l) => ({ cx: l.cx + rx0, y0: l.y0 + by0, y1: l.y1 + by0, above: l.above })),
+    };
+  })();
+  // brackets are handed to the staff that owns the notes under / over them by analyzePage (tupletCands)
+  const tuplets: { x0: number; x1: number; n: number }[] = [];
+
   // ---- opened mask for filled noteheads
   const hmin = Math.max(2, Math.round(0.5 * d));
   const vmin = Math.max(2, Math.round(0.7 * d));
@@ -851,7 +977,7 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
   // hollow heads: ring detection on the ORIGINAL crop (holes survive staff-line removal there)
   const hollowBoxes: { x0: number; y0: number; x1: number; y1: number }[] = [];
   const ringIds = new Set<number>();
-  const hollowFound = findHollowHeads({ w: W, h: H, d: src.d }, d, t, (x, i) => ly(lineY(staff, i, x + rx0)));
+  const hollowFound = findHollowHeads({ w: W, h: H, d: src.d }, d, t, (x, i) => (i < 0 ? ly(lineY(staff, 0, x + rx0) + i * d) : i > 4 ? ly(lineY(staff, 4, x + rx0) + (i - 4) * d) : ly(lineY(staff, i, x + rx0))));
   for (const hf of hollowFound) {
     if (hf.cx <= musicStart || hf.cy < topL - 4.6 * d || hf.cy > botL + 4.6 * d) continue;
     // ring components (cleaned image): mark them as note components so they are not reinterpreted as rests/ties
@@ -1236,6 +1362,18 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
   });
   const noteheads = noteheads0.filter((_, i) => !dropHead.has(i));
   const pageStems: StemInfo[] = stems.map((s) => ({ ...s, x: s.x + rx0, top: s.top + ry0, bottom: s.bottom + ry0 }));
+  // a "3" sitting just beyond the beam of three beamed stems (no bracket): an eighth / sixteenth triplet
+  for (const g of tupletScan.loose) {
+    const cand = pageStems.filter((s) => s.beamed && Math.abs(s.x - g.cx) <= 3.6 * d && (g.above ? s.up && g.y1 >= s.top - 1.6 * d && g.y1 <= s.top + 0.3 * d : !s.up && g.y0 >= s.bottom - 0.3 * d && g.y0 <= s.bottom + 1.6 * d));
+    if (cand.length < 3) continue;
+    cand.sort((a, b) => Math.abs(a.x - g.cx) - Math.abs(b.x - g.cx));
+    const trio = cand.slice(0, 3).sort((a, b) => a.x - b.x);
+    if (g.cx < trio[0].x - 0.8 * d || g.cx > trio[2].x + 0.8 * d) continue;
+    // the three stems must be consecutive in their beam group (no other stem between them)
+    const between = pageStems.filter((s) => s.beamed && s.x > trio[0].x + 0.5 * d && s.x < trio[2].x - 0.5 * d);
+    if (between.length !== 1) continue;
+    tuplets.push({ x0: trio[0].x - 0.9 * d, x1: trio[2].x + 0.9 * d, n: 3 });
+  }
 
   // ---- remaining symbols: dots, accidentals, rests, ties
   const rests: RestSym[] = [];
@@ -1348,6 +1486,22 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
       noteheads[bi].confidence *= a.conf >= 0.8 ? 1 : 0.9;
     }
   }
+  // accidentals from vertical strokes (robust against signs merged with beams / stems / parentheses)
+  {
+    const hits = detectAccidentals(
+      { w: W, h: H, d: clean.d },
+      d,
+      t,
+      noteheads,
+      rx0,
+      ry0,
+      [...stems.map((s) => s.x), ...barLocal],
+      musicStart + rx0,
+    );
+    hits.forEach((hit, i) => {
+      noteheads[i].accidental = hit.kind;
+    });
+  }
   // dots → nearest head (or rest)
   for (const c of dotsC) {
     const cx = (c.x0 + c.x1 + 1) / 2;
@@ -1376,31 +1530,16 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
       }
     }
   }
-  // ties between equal-pitch heads
+  // ties between equal-pitch heads (arcs traced beside each head; see ties.ts)
   let tieOut: Notehead | undefined;
-  const order = noteheads.map((_, i) => i).sort((a, b) => noteheads[a].cx - noteheads[b].cx);
-  for (const c of ties) {
-    const cL = c.x0 + rx0;
-    const cR = c.x1 + rx0;
-    let left = -1;
-    let right = -1;
-    for (const i of order) {
-      const nh = noteheads[i];
-      if (Math.abs(nh.cx - cL) <= 1.0 * d && (left < 0 || nh.cx > noteheads[left].cx)) left = i;
-    }
-    if (left < 0) continue; // no notehead under the tie's left end
-    const leftY = noteheads[left].cy;
-    for (const i of order) {
-      const nh = noteheads[i];
-      if (Math.abs(nh.cx - cR) <= 1.0 * d && nh.cx > cL + 0.5 * d) {
-        if (right < 0 || Math.abs(nh.cy - leftY) < Math.abs(noteheads[right].cy - leftY)) right = i;
-      }
-    }
-    if (right < 0 && cR >= staff.right - 2.5 * d) tieOut = noteheads[left]; // tie arc running off the end of the line
-    if (left >= 0 && right >= 0 && left !== right) {
-      const a = noteheads[left];
-      const b = noteheads[right];
-      if (Math.abs(a.cy - b.cy) <= 0.3 * d && b.cx > a.cx) b.tiedFromPrevious = true;
+  const tieOuts: Notehead[] = [];
+  void ties; // thin horizontal arcs are classified by detectTies below
+  {
+    const tr = detectTies({ w: W, h: H, d: src.d }, staff, noteheads, rx0, ry0);
+    for (const [, b] of tr.pairs) if (!noteheads[b].accidental) noteheads[b].tiedFromPrevious = true;
+    if (tr.out.length) {
+      tieOuts.push(...tr.out.map((i) => noteheads[i]));
+      tieOut = tieOut ?? noteheads[tr.out[0]];
     }
   }
 
@@ -1433,6 +1572,9 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
     timeSigUnreadable,
     slashes,
     multiRests,
+    tuplets,
+    tupletCands: tupletScan.brackets,
     tieOut,
+    tieOuts,
   };
 }

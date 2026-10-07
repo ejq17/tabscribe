@@ -81,8 +81,8 @@ export function clusterHeads(heads: Notehead[], stems: StemInfo[], d: number, pp
 }
 
 export type RhythmEvent =
-  | { kind: 'cluster'; x: number; cluster: Cluster }
-  | { kind: 'rest'; x: number; rest: RestSym };
+  | { kind: 'cluster'; x: number; cluster: Cluster; tuplet?: number }
+  | { kind: 'rest'; x: number; rest: RestSym; tuplet?: number };
 
 export interface PlacedEvent {
   event: RhythmEvent;
@@ -110,6 +110,11 @@ export function staffMeasures(sym: StaffSymbols, stems: StemInfo[], d: number, p
   for (const c of clusterHeads(sym.heads, stems, d, ppq)) all.push({ kind: 'cluster', x: c.x, cluster: c });
   for (const r of sym.rests) all.push({ kind: 'rest', x: (r.x0 + r.x1) / 2, rest: r });
   all.sort((a, b) => a.x - b.x);
+  // events under a triplet bracket / digit sound 3 in the time of 2
+  for (const tp of sym.tuplets ?? []) {
+    if (tp.n !== 3) continue;
+    for (const e of all) if (e.x >= tp.x0 - 0.3 * d && e.x <= tp.x1 + 0.3 * d) e.tuplet = 3;
+  }
   const nb = sym.barlines.length;
   const slotOf = (x: number): number => {
     let k = 0;
@@ -175,7 +180,20 @@ export function layoutMeasure(events0: RhythmEvent[], nominal: number, ppq: numb
   // rest-only bars (chord-hit / slash notation, cue marks) produce no notes: nothing to repair, never a mismatch
   const restOnly = !events.some((e) => e.kind === 'cluster');
   const stdOrig = std.slice();
-  const mismatch0 = !restOnly && total > 0 && Math.abs(total - nominal) > 1;
+  // events inside a detected triplet group take 2/3 of their written length on the triplet grid
+  const g3a = ppq / 6;
+  let explicitTuplet = false;
+  events.forEach((e, i) => {
+    if (e.tuplet !== 3) return;
+    explicitTuplet = true;
+    std[i] = Math.round((std[i] * 2) / 3);
+    tgt[i] = std[i];
+    grids[i] = g3a;
+  });
+  if (explicitTuplet) total = std.reduce((s, v) => s + v, 0);
+  // a bracketed triplet bar that is merely short has implied trailing rests: nothing to repair or rescale
+  const impliedRests = explicitTuplet && total < nominal - 1;
+  const mismatch0 = !restOnly && total > 0 && Math.abs(total - nominal) > 1 && !impliedRests;
   if (mismatch0) {
     // find three consecutive equal events whose 2:3 compression makes the bar add up
     for (let i = 0; i + 2 < std.length && !tuplet; i++) {
@@ -217,7 +235,7 @@ export function layoutMeasure(events0: RhythmEvent[], nominal: number, ppq: numb
   let scale = 1;
   let scaled = false;
   let clipped = false;
-  const mismatchLeft = !restOnly && total > 0 && Math.abs(total - nominal) > 1;
+  const mismatchLeft = !restOnly && total > 0 && Math.abs(total - nominal) > 1 && !impliedRests;
   const mismatch = mismatch0 || mismatchLeft;
   if (mismatchLeft) {
     const ratio = nominal / total;
@@ -273,5 +291,5 @@ export function layoutMeasure(events0: RhythmEvent[], nominal: number, ppq: numb
     });
     cursor += q[i];
   });
-  return { placed, total, scaled, mismatch, clipped, tuplet, repaired };
+  return { placed, total, scaled, mismatch, clipped, tuplet: tuplet || explicitTuplet, repaired };
 }

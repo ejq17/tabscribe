@@ -127,7 +127,8 @@ export function findHollowHeads(img: GImg, d: number, t: number, lineYAt: (x: nu
       const gy = (a.y1 + b.y0) / 2;
       const cx = (ox0 + ox1) / 2;
       let onLine = false;
-      for (let i = 0; i < 5; i++) if (Math.abs(lineYAt(cx, i) - gy) <= (t + 3) / 2 + 0.5) onLine = true;
+      // staff lines (0..4) and ledger-line positions above / below the staff
+      for (let i = -6; i <= 10; i++) if (Math.abs(lineYAt(cx, i) - gy) <= (t + 3) / 2 + 0.5) onLine = true;
       if (!onLine) continue;
       const biggerA = a.area >= b.area;
       cands.push({

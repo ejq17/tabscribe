@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { recognizeImageData } from '../src/omr';
 import type { Score } from '../src/core';
-import { Canvas, TOP, lineC, yStep, staff, barline, filledHead, hollowHead, trebleClef } from './fixtures/omr/synth';
+import { Canvas, TOP, lineC, yStep, staff, barline, filledHead, hollowHead, trebleClef, sharp } from './fixtures/omr/synth';
 
 const notesOf = (s: Score) => s.tracks.flatMap((t) => t.notes).sort((a, b) => a.start - b.start || b.pitch - a.pitch);
 
@@ -215,5 +215,136 @@ describe('omr: real-engraving robustness (synthetic)', () => {
     const notes = notesOf(recognizeImageData([c.img()]));
     expect(notes.map((n) => n.duration)).toEqual([120, 120, 240, 480, 960]);
     expect(notes.map((n) => n.start)).toEqual([0, 120, 240, 480, 960]);
+  });
+});
+
+/** Natural sign: two thin verticals, the right one lower, joined by a small parallelogram. */
+function natural(c: Canvas, x: number, cy: number) {
+  c.rect(x, cy - 14, x + 1, cy + 6);
+  c.rect(x + 7, cy - 6, x + 8, cy + 14);
+  c.rect(x + 1, cy - 8, x + 7, cy - 6);
+  c.rect(x + 1, cy + 4, x + 7, cy + 6);
+}
+
+/** 5x7 bitmap digit scaled x2, top-left at (x, y). */
+function digit(c: Canvas, rows: string[], x: number, y: number) {
+  rows.forEach((row, ry) => {
+    for (let rx = 0; rx < row.length; rx++) if (row[rx] === '#') c.rect(x + rx * 2, y + ry * 2, x + rx * 2 + 1, y + ry * 2 + 1);
+  });
+}
+const THREE = ['.###.', '#...#', '....#', '..##.', '....#', '#...#', '.###.'];
+
+/** A thin arc (2 px) that starts and ends touching the heads' lower edges and bows downwards. */
+function lowerArc(c: Canvas, x0: number, y0: number, x1: number, y1: number, bow: number) {
+  for (let x = x0; x <= x1; x++) {
+    const t = (x - x0) / (x1 - x0);
+    const y = y0 + (y1 - y0) * t + bow * Math.sin(Math.PI * t);
+    c.rect(x, y, x, y + 1);
+  }
+}
+
+describe('omr: ties, accidentals, tuplets and multi-measure rests (synthetic)', () => {
+  it('ties two equal-pitch heads joined by an arc merged into the notehead outlines', () => {
+    const c = new Canvas(400, 260);
+    staff(c, 40, 380);
+    const cy = yStep(0);
+    filledHead(c, 100, 0);
+    filledHead(c, 200, 0);
+    lowerArc(c, 104, cy + 4, 196, cy + 4, 9); // starts inside both heads: one connected component
+    const notes = notesOf(recognizeImageData([c.img()]));
+    expect(notes.map((n) => n.pitch)).toEqual([71, 71]);
+    expect(notes[0].tiedFromPrevious).toBeFalsy();
+    expect(notes[1].tiedFromPrevious).toBe(true);
+  });
+
+  it('does not tie a slur between two different pitches, nor two equal pitches without an arc', () => {
+    const c = new Canvas(520, 260);
+    staff(c, 40, 500);
+    filledHead(c, 100, 0);
+    filledHead(c, 200, 2); // D5
+    lowerArc(c, 104, yStep(0) + 4, 196, yStep(2) + 4, 8);
+    filledHead(c, 300, 0);
+    filledHead(c, 400, 0); // same pitch, no arc
+    const notes = notesOf(recognizeImageData([c.img()]));
+    expect(notes.length).toBe(4);
+    expect(notes.map((n) => !!n.tiedFromPrevious)).toEqual([false, false, false, false]);
+  });
+
+  it('lets a natural sign cancel a key-signature flat', () => {
+    const c = new Canvas(420, 260);
+    staff(c, 40, 400);
+    trebleClef(c, 48);
+    flat(c, 100, yStep(0)); // Bb
+    flat(c, 115, yStep(3)); // Eb
+    flat(c, 130, yStep(-1)); // Ab
+    flat(c, 145, yStep(2)); // Db
+    natural(c, 205, yStep(0));
+    filledHead(c, 240, 0); // B natural
+    filledHead(c, 300, 0); // the natural lasts until the barline: still B natural
+    barline(c, 340);
+    filledHead(c, 380, 0); // next bar: Bb
+    const score = recognizeImageData([c.img()]);
+    expect(score.keySignatures[0].fifths).toBe(-4);
+    expect(notesOf(score).map((n) => n.pitch)).toEqual([71, 71, 70]);
+  });
+
+  it('applies a sharp sign to the following note', () => {
+    const c = new Canvas(400, 260);
+    staff(c, 40, 380);
+    trebleClef(c, 48);
+    sharp(c, 170, yStep(1));
+    filledHead(c, 205, 1); // C5 -> C#5
+    filledHead(c, 270, 1); // still C#5 (same bar)
+    barline(c, 330);
+    filledHead(c, 360, 1); // next bar: C5
+    const notes = notesOf(recognizeImageData([c.img()]));
+    expect(notes.map((n) => n.pitch)).toEqual([73, 73, 72]);
+  });
+
+  it('reads a quarter-note triplet bracket with a "3" as three notes of 320 ticks', () => {
+    const c = new Canvas(400, 260);
+    staff(c, 40, 380);
+    const ly = TOP - 30;
+    c.rect(88, ly, 142, ly + 1); // left half of the bracket
+    c.rect(88, ly, 89, ly + 10); // left tick
+    c.rect(162, ly, 216, ly + 1); // right half
+    c.rect(215, ly, 216, ly + 10); // right tick
+    digit(c, THREE, 147, ly - 6);
+    for (const x of [100, 150, 200]) filledHead(c, x, 0);
+    c.rect(379, TOP, 380, TOP + 41);
+    const notes = notesOf(recognizeImageData([c.img()]));
+    expect(notes.length).toBe(3);
+    expect(notes.map((n) => n.duration)).toEqual([320, 320, 320]);
+    expect(notes.map((n) => n.start)).toEqual([0, 320, 640]);
+  });
+
+  it('expands a multi-measure rest numbered 3 into three empty measures', () => {
+    const c = new Canvas(440, 260);
+    staff(c, 40, 420);
+    c.rect(70, TOP + 19, 290, TOP + 22);
+    c.rect(70, yStep(0) - 7, 71, yStep(0) + 7);
+    c.rect(289, yStep(0) - 7, 290, yStep(0) + 7);
+    digit(c, THREE, 172, TOP - 34);
+    barline(c, 310);
+    filledHead(c, 360, 0);
+    c.rect(419, TOP, 420, TOP + 41);
+    const score = recognizeImageData([c.img()]);
+    const notes = notesOf(score);
+    expect(notes.length).toBe(1);
+    expect(notes[0].start).toBe(3 * 1920);
+    expect(score.meta.warnings?.some((w) => /multi-measure/.test(w))).toBeFalsy();
+  });
+
+  it('names the measure when a multi-measure rest count cannot be read', () => {
+    const c = new Canvas(440, 260);
+    staff(c, 40, 420);
+    filledHead(c, 100, 0);
+    barline(c, 160);
+    c.rect(190, TOP + 19, 400, TOP + 22);
+    c.rect(190, yStep(0) - 7, 191, yStep(0) + 7);
+    c.rect(399, yStep(0) - 7, 400, yStep(0) + 7);
+    c.rect(419, TOP, 420, TOP + 41);
+    const score = recognizeImageData([c.img()]);
+    expect(score.meta.warnings?.some((w) => /multi-measure rest at measure 2/.test(w))).toBe(true);
   });
 });

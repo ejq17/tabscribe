@@ -126,8 +126,14 @@ export interface StaffSymbols {
   slashes?: { cx: number; cy: number }[];
   /** multi-measure rest bars with the number of measures they stand for */
   multiRests?: { x0: number; x1: number; count: number; guessed: boolean }[];
+  /** triplet brackets / digits: x extent of the notation they span (page coordinates) */
+  tuplets?: { x0: number; x1: number; n: number }[];
+  /** tuplet brackets seen near this staff (page coordinates); analyzePage hands each to the staff whose notes it spans */
+  tupletCands?: { x0: number; x1: number; n: number; y0: number; y1: number }[];
   /** the staff ends with a tie arc that has no right-hand notehead (tie across the line break) */
   tieOut?: Notehead;
+  /** all heads whose tie arc runs off the end of the staff (chords can have several) */
+  tieOuts?: Notehead[];
 }
 
 export interface PageResult {
