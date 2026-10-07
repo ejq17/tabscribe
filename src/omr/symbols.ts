@@ -1093,10 +1093,12 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
       const nh = noteheads[i];
       if (Math.abs(nh.cx - cL) <= 1.0 * d && (left < 0 || nh.cx > noteheads[left].cx)) left = i;
     }
+    if (left < 0) continue; // no notehead under the tie's left end
+    const leftY = noteheads[left].cy;
     for (const i of order) {
       const nh = noteheads[i];
       if (Math.abs(nh.cx - cR) <= 1.0 * d && nh.cx > cL + 0.5 * d) {
-        if (right < 0 || Math.abs(nh.cy - (left >= 0 ? noteheads[left].cy : nh.cy)) < Math.abs(noteheads[right].cy - noteheads[left].cy)) right = i;
+        if (right < 0 || Math.abs(nh.cy - leftY) < Math.abs(noteheads[right].cy - leftY)) right = i;
       }
     }
     if (left >= 0 && right >= 0 && left !== right) {
