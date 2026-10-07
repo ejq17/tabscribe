@@ -228,9 +228,40 @@ function searchVoicing(p: ParsedChord, tuning: Tuning, name: string): ChordDiagr
   return found ? buildDiagram(name, found.frets) : null;
 }
 
+/**
+ * Nearest chord the diagram engine knows for a name it cannot parse (printed symbols like "D7b9b5", "Am11", "Gmadd2"):
+ * extensions and alterations are dropped. Returns null when the root cannot be read.
+ */
+export function simplifyChordName(name: string): string | null {
+  const m = /^([A-G][#b]?)([^/]*)(?:\/([A-G][#b]?))?$/.exec(name.trim());
+  if (!m) return null;
+  const [, root, q, bass] = m;
+  if (!/^(?:maj|min|dim|aug|add|sus|alt|[mMΔ°ø+\-#b0-9()])*$/.test(q)) return null;
+  let out: string;
+  if (/dim|°|o7?$/.test(q)) out = /7/.test(q) ? 'dim7' : 'dim';
+  else if (/ø|m7b5/.test(q)) out = 'm7b5';
+  else if (/aug|\+/.test(q)) out = 'aug';
+  else if (/^(maj|M|Δ)/.test(q)) out = 'maj7';
+  else if (/^(m|min|-)/.test(q)) out = /6/.test(q) ? 'm6' : /9/.test(q) ? 'm9' : /(7|11|13)/.test(q) ? 'm7' : 'm';
+  else if (/sus2/.test(q)) out = 'sus2';
+  else if (/sus/.test(q)) out = 'sus4';
+  else if (/^9/.test(q)) out = '9';
+  else if (/^(7|11|13)/.test(q)) out = '7';
+  else if (/^(6|69|6\/9)/.test(q)) out = '6';
+  else if (/^5/.test(q)) out = '5';
+  else if (/add/.test(q)) out = 'add9';
+  else out = '';
+  return root + out + (bass ? '/' + bass : '');
+}
+
 export function chordDiagram(name: string, tuning: Tuning): ChordDiagram | null {
   const p = parseChordName(name);
-  if (!p) return null;
+  if (!p) {
+    const simple = simplifyChordName(name);
+    if (!simple || simple === name || !parseChordName(simple)) return null;
+    const d = chordDiagram(simple, tuning);
+    return d ? { ...d, name } : null;
+  }
   if (isStandard(tuning)) {
     const d = lookupStandard(p, name);
     if (d) return d;

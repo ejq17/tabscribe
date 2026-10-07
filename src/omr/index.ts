@@ -5,7 +5,8 @@
  *  - renderPdfPages(data, scale?)            PDF → canvases (pdf.js, worker bundled locally)
  *  - imageToCanvas(file)                     image file → canvas
  *  - recognizeScore(pages, opts?)            canvases → Score (pixel work runs in a Web Worker when available)
- *  - recognizeImageData(pages, opts?)        pure/synchronous version over `{width,height,data}` RGBA buffers
+ *  - recognizeImageData(pages, opts?)        pure/synchronous version over `{width,height,data}` RGBA buffers (no chords)
+ *  - recognizeImageDataWithChords(pages, opts?)  async version that also reads chord symbols
  *  - detectStaves(binary), binarize(image)   building blocks (exported for tests)
  *
  * Score output conventions (documented for the UI):
@@ -16,18 +17,46 @@
  *                         `{ page, x, y, w, h }` in ORIGINAL page-pixel coordinates of the canvas passed to
  *                         `recognizeScore` (`page` is the 0-based index into `meta.sourcePages`). The box is the
  *                         notehead's bounding region; use it to highlight the source when a note is selected.
- *  - Piano grand staves (two staves joined by a brace/system barline) become ONE track: voice 0 = treble staff,
- *    voice 1 = bass staff, with aligned measure starts. Other multi-staff systems yield one track per staff row.
+ *  - SYSTEMS: any number of staves joined by a continuous system barline at the left (voice + piano = 3, choir = 4 ...)
+ *    form ONE system; measures are counted once per system. The barlines of the staves are voted (a barline is kept when
+ *    at least half of the staves have it; with two staves the union is used), so a barline missed by one staff does not
+ *    shift its notes, and every track shares the same measure timeline. Measure numbering continues across systems and pages.
+ *  - Tracks: the two staves of a piano grand staff (the lowest staff pair, or a 2-staff system, joined by a brace) become
+ *    ONE track: voice 0 = treble staff, voice 1 = bass staff. Every other staff of a system is its own track (voice 0),
+ *    named "Staff N" (N = position in the system), or "Melody" when the system has a single staff.
+ *  - PITCH IS SOUNDING PITCH. A treble clef with a small "8" printed below it (tenor, guitar) is read an octave lower
+ *    (detected from the page image, voted per part). Guitar music is usually printed WITHOUT the 8; pass
+ *    `instrument: 'guitar'` (RecognizeOptions) to read treble clefs an octave lower, EXCEPT inside a piano grand staff or any system that contains a bass-clef staff (keyboard music is not transposed). Default 'concert' reads
+ *    treble clefs as written (plus the printed 8). The UI exposes this as the "written for guitar" setting.
+ *  - `meta.omrMeasures`   number of measures the assembler laid out (courtesy key/time signatures after the last
+ *                         barline of a staff are NOT measures; they are carried to the start of the next system).
+ *  - `meta.omrSlashMeasures` (only present when found) `{ index, tick, length }[]`: bars written in slash / chord-hit
+ *                         notation (>= 2 slashes, no noteheads). `index` is the 0-based measure number, `tick` its
+ *                         start, `length` its length in ticks. These bars contain no notes; a strum chart can render
+ *                         them using the chord symbols of that span. Absent for scores without slash bars.
+ *  - `meta.omrChords` (only present when found) `{ measure, tick, text, chord:{root,quality,bass?}, confidence }[]`: chord
+ *                         symbols read by OCR above the FIRST staff of each system. `measure` is the 0-based measure index as
+ *                         the assembler counts it, `tick` the absolute tick (nearest beat within the measure, so several chords
+ *                         per bar are possible). A label over a multi-measure rest sits on its first measure. Chord OCR needs
+ *                         nested-worker support (tesseract.js); without it the key is simply absent. The app prefers these over
+ *                         chords inferred from notes. `recognizeScore` returns them; `recognizeImageData` (sync) does not
+ *                         (use `recognizeImageDataWithChords`).
+ *  - Time signatures: printed ones are used; when none is printed and several consecutive bars add up to another
+ *    meter, that meter is inferred (and a warning is added). Durations are never stretched to odd values: bars that
+ *    are too long are snapped to standard durations, short bars are left as read.
  *  - `note.confidence` is 0..1 (lowered for stemless/ambiguous heads and for measures whose durations had to be rescaled).
  */
 import type { Score } from '../core';
-import { recognizeImageData } from './assemble';
-import type { RawImage, RecognizeOptions } from './types';
+import { recognizeImageDataWithChords } from './assemble';
+import type { OmrInstrument, RawImage, RecognizeOptions } from './types';
 import type { WorkerRequest, WorkerResponse } from './worker';
 
 export { renderPdfPages } from './pdf';
 export { imageToCanvas } from './image';
-export { recognizeImageData, analyzePage, assembleScore } from './assemble';
+export { recognizeImageData, recognizeImageDataWithChords, analyzePage, assembleScore, readPageChords } from './assemble';
+export type { OmrChordEntry } from './assemble';
+export { detectChordLabels, readChordText, configureChordOcr } from './chordtext';
+export type { ChordLabel } from './chordtext';
 export { binarize, preprocess } from './preprocess';
 export { detectStaves, removeStaffLines } from './staves';
 export type { OmrBox, PageResult, RawImage, Staff, StaffSymbols } from './types';
@@ -35,6 +64,8 @@ export type { OmrBox, PageResult, RawImage, Staff, StaffSymbols } from './types'
 export interface OmrOptions {
   onProgress?: (p: { stage: string; fraction: number; page?: number }) => void;
   defaultClef?: 'treble' | 'bass';
+  /** 'guitar': treble clefs sound an octave below written. Default 'concert'. */
+  instrument?: OmrInstrument;
 }
 
 function canvasToRaw(c: HTMLCanvasElement): RawImage {
@@ -71,6 +102,7 @@ function runInWorker(pages: RawImage[], opts: RecognizeOptions): Promise<Score> 
     const req: WorkerRequest = {
       type: 'recognize',
       defaultClef: opts.defaultClef,
+      instrument: opts.instrument,
       pages: pages.map((p) => ({ width: p.width, height: p.height, buffer: p.data.buffer as ArrayBuffer })),
     };
     worker.postMessage(req, req.pages.map((p) => p.buffer));
@@ -107,5 +139,5 @@ export async function recognizeScore(pages: HTMLCanvasElement[], opts: OmrOption
 async function runInline(raws: RawImage[], opts: RecognizeOptions): Promise<Score> {
   // yield once so the UI can paint the progress state before the heavy synchronous work
   await new Promise((r) => setTimeout(r, 0));
-  return recognizeImageData(raws, opts);
+  return recognizeImageDataWithChords(raws, opts);
 }

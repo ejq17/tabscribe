@@ -13,10 +13,11 @@ export default function StrumChart() {
     if (!score) return null;
     const lines = strumChart(score, chords);
     const measures = measuresOf(score);
+    const slash = new Set((score.meta.omrSlashMeasures ?? []).map((m) => m.tick)) // keyed by start tick, not index;
     const names: string[] = [];
     for (const l of lines) for (const c of l.cells) if (c.chord && !names.includes(c.chord)) names.push(c.chord);
     const diagrams = names.map((n) => ({ name: n, d: chordDiagram(n, guitar.tuning) }));
-    return { lines, measures, diagrams };
+    return { lines, measures, diagrams, slash };
   }, [score, chords, guitar.tuning]);
 
   if (!score || !data) return null;
@@ -46,13 +47,16 @@ export default function StrumChart() {
           }
           return (
             <div className="strum-line" key={line.measureStart}>
-              {[...byMeasure.entries()].map(([mi, cells]) => (
+              {[...byMeasure.entries()].map(([mi, cells]) => {
+                const isSlash = data.slash.has(data.measures.find((mm) => mm.index === mi)?.startTick ?? -1);
+                return (
                 <div className="strum-measure" key={mi}>
                   <span className="strum-num">{mi + 1}</span>
                   <div className="strum-cells">
                     {cells.map((c, i) => {
-                      let text = '·';
-                      let cls = 'rest';
+                      // bars written as slashes in the source: empty beats are strummed on the current chord
+                      let text = isSlash ? '/' : '·';
+                      let cls = isSlash ? 'same' : 'rest';
                       if (c.chord) {
                         if (c.chord === prev) {
                           text = '/';
@@ -71,7 +75,8 @@ export default function StrumChart() {
                     })}
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           );
         })}

@@ -4,3 +4,4 @@ export { chordDiagram, diagramFromVoicing, parseChordName, buildDiagram } from '
 export type { ChordDiagram, ParsedChord } from './shapes';
 export { strumChart } from './strum';
 export type { StrumLine } from './strum';
+export { omrChordEvents, mergeOmrChords } from './omr';

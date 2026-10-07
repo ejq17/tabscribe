@@ -3,3 +3,6 @@ dist
 dev-dist
 .DS_Store
 *.local
+
+# copyrighted scores used only as local OMR fixtures
+tests/fixtures/omr/real-local/

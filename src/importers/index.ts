@@ -10,6 +10,8 @@ export interface ImportOptions {
   onProgress?: (p: { stage: string; fraction: number }) => void;
   /** Clef assumed by OMR when none is recognised. */
   defaultClef?: 'treble' | 'bass';
+  /** 'guitar' reads treble clefs an octave lower (guitar sounds an octave below written). */
+  instrument?: 'guitar' | 'concert';
 }
 
 export { importMidi, importMusicXml, importAbc, importGuitarPro };
@@ -105,6 +107,7 @@ export async function importFile(file: File, opts: ImportOptions = {}): Promise<
       score = await omr.recognizeScore(pages, {
         onProgress: (p) => progress(p.stage, 0.15 + 0.85 * p.fraction),
         defaultClef: opts?.defaultClef,
+        instrument: opts?.instrument,
       });
       score.meta.source = 'omr';
       break;
@@ -117,6 +120,7 @@ export async function importFile(file: File, opts: ImportOptions = {}): Promise<
       score = await omr.recognizeScore([canvas], {
         onProgress: (p) => progress(p.stage, 0.15 + 0.85 * p.fraction),
         defaultClef: opts?.defaultClef,
+        instrument: opts?.instrument,
       });
       score.meta.source = 'omr';
       break;

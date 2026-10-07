@@ -230,9 +230,14 @@ export function detectTies(img: TieImage, staff: Staff, heads: Notehead[], ox: n
       const xa = cx + 0.62 * d;
       const xb = gx - 0.62 * d;
       let best: Path | null = null;
-      for (const dir of [-1, 1]) {
-        const p = traceArc(img, run, lm, d, cx, cy, dir, xa, xb, Math.round(0.6 * d), Math.round(0.6 * d), maxRun, longRun);
-        if (p.ok && (!best || p.score > best.score)) best = p;
+      // pass 1: the arc between the heads' inner edges; pass 2 (short ties, e.g. a quarter tied to the eighth before
+      // it): the arc that bridges from head centre to head centre, whose visible middle part is nearly flat
+      for (const [wa, wb, free] of [[xa, xb, 0.6], [cx + 0.15 * d, gx - 0.15 * d, 0.9]] as const) {
+        for (const dir of [-1, 1]) {
+          const p = traceArc(img, run, lm, d, cx, cy, dir, wa, wb, Math.round(free * d), Math.round(free * d), maxRun, longRun);
+          if (p.ok && (!best || p.score > best.score)) best = p;
+        }
+        if (best) break;
       }
       if (best) {
         pairs.push([hi, partner]);

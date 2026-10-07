@@ -11,7 +11,7 @@ import {
 } from '../core';
 import { importFile } from '../importers';
 import { assignTab } from '../tab';
-import { detectChords, type ChordEvent } from '../chords';
+import { detectChords, mergeOmrChords, type ChordEvent } from '../chords';
 import { applyPatch, fretOn, guitarNotes, mapGuitarNotes, type NotePatch } from './ops';
 
 export { fretOn, playableStrings, sortedNotes, guitarNotes } from './ops';
@@ -44,6 +44,8 @@ export interface StatusState {
 export interface SettingsState {
   chordResolution: ChordResolution;
   defaultClef: 'treble' | 'bass';
+  /** Scanned sheet music is written for guitar (sounds an octave lower than printed). Applied to treble staves only, never inside a piano grand staff or a system with a bass-clef staff. */
+  guitarOctave: boolean;
 }
 
 export interface AppState {
@@ -116,7 +118,7 @@ const defaultView: ViewState = {
   mode: 'tab',
   zoom: 1,
 };
-const defaultSettings: SettingsState = { chordResolution: 'half', defaultClef: 'treble' };
+const defaultSettings: SettingsState = { chordResolution: 'half', defaultClef: 'treble', guitarOctave: true };
 
 function safeAssign(score: Score, guitar: GuitarConfig): Score {
   try {
@@ -128,7 +130,7 @@ function safeAssign(score: Score, guitar: GuitarConfig): Score {
 }
 function safeChords(score: Score, resolution: ChordResolution): ChordEvent[] {
   try {
-    return detectChords(score, { resolution });
+    return mergeOmrChords(score, detectChords(score, { resolution }));
   } catch (e) {
     console.warn('detectChords failed', e);
     return [];
@@ -164,6 +166,7 @@ export const useStore = create<AppState>()((set, get) => {
           onProgress: (p: { stage: string; fraction: number }) =>
             set({ status: { busy: true, stage: p.stage, fraction: p.fraction } }),
           defaultClef: get().settings.defaultClef,
+          instrument: (get().settings.guitarOctave ? 'guitar' : 'concert') as 'guitar' | 'concert',
         };
         const score = await importFile(file, opts);
         if (!score.meta.title) score.meta.title = file.name.replace(/\.[^.]+$/, '');

@@ -1,0 +1,21 @@
+{
+  "id": "mutopia-carcassi-op60-01",
+  "title": "Etude 1, Op. 60",
+  "composer": "Matteo Carcassi",
+  "source": "Mutopia Project",
+  "sourceUrl": "https://www.mutopiaproject.org/ftp/CarcassiM/O60/carcassi-op60-01/carcassi-op60-01.ly",
+  "license": "Public Domain",
+  "features": [
+    "single-staff",
+    "single-key",
+    "time-4/4",
+    "accidentals",
+    "lyrics"
+  ],
+  "pages": 1,
+  "instrument": "guitar",
+  "dpi": 150,
+  "engraving": "LilyPond (original Mutopia PDF)",
+  "groundTruth": "MIDI imported to MusicXML by MuseScore 4",
+  "note": "Classical guitar solo, original LilyPond engraving. MusicXML is a MIDI import: pitches/onsets are right, but notation details (voices, beaming, ties) are MuseScore guesses."
+}

@@ -1,0 +1,25 @@
+{
+  "id": "lieder-brahms-magdalena",
+  "title": "Magdalena (Marienlieder, Op. 22)",
+  "composer": "Johannes Brahms",
+  "source": "OpenScore Lieder",
+  "sourceUrl": "https://raw.githubusercontent.com/OpenScore/Lieder/38c5db510224d9facdc4b08d741fc788cfb58ea8/scores/Brahms%2C_Johannes/Marienlieder%2C_Op.22/6_Magdalena/lc8702982.mscx",
+  "license": "CC0-1.0",
+  "features": [
+    "multi-part",
+    "single-key",
+    "flat-key",
+    "time-4/4",
+    "slurs",
+    "accidentals",
+    "lyrics",
+    "dynamics",
+    "fermata",
+    "repeats",
+    "bass-clef"
+  ],
+  "pages": 1,
+  "dpi": 150,
+  "engraving": "MuseScore 4",
+  "groundTruth": "MusicXML exported from the OpenScore .mscx"
+}

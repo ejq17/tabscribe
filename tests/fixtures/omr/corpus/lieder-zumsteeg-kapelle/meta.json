@@ -1,0 +1,27 @@
+{
+  "id": "lieder-zumsteeg-kapelle",
+  "title": "Die Kapelle (Op. 4 no. 1)",
+  "composer": "Emilie Zumsteeg",
+  "source": "OpenScore Lieder",
+  "sourceUrl": "https://raw.githubusercontent.com/OpenScore/Lieder/38c5db510224d9facdc4b08d741fc788cfb58ea8/scores/Zumsteeg%2C_Emilie/6_Lieder%2C_Op.4/1_Die_Kapelle/lc6159729.mscx",
+  "license": "CC0-1.0",
+  "features": [
+    "grand-staff",
+    "multi-part",
+    "key-change",
+    "flat-key",
+    "time-6/8",
+    "time-4/4",
+    "time-change",
+    "slurs",
+    "accidentals",
+    "lyrics",
+    "dynamics",
+    "fermata",
+    "repeats"
+  ],
+  "pages": 2,
+  "dpi": 150,
+  "engraving": "MuseScore 4",
+  "groundTruth": "MusicXML exported from the OpenScore .mscx"
+}

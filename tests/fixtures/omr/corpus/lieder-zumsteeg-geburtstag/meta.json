@@ -1,0 +1,20 @@
+{
+  "id": "lieder-zumsteeg-geburtstag",
+  "title": "Der Geburtstag",
+  "composer": "Emilie Zumsteeg",
+  "source": "OpenScore Lieder",
+  "sourceUrl": "https://raw.githubusercontent.com/OpenScore/Lieder/38c5db510224d9facdc4b08d741fc788cfb58ea8/scores/Zumsteeg%2C_Emilie/5_Lieder/2_Der_Geburtstag/lc6158825.mscx",
+  "license": "CC0-1.0",
+  "features": [
+    "multi-part",
+    "single-key",
+    "time-4/4",
+    "tuplets",
+    "slurs",
+    "lyrics"
+  ],
+  "pages": 1,
+  "dpi": 150,
+  "engraving": "MuseScore 4",
+  "groundTruth": "MusicXML exported from the OpenScore .mscx"
+}

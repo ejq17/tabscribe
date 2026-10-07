@@ -1,0 +1,22 @@
+{
+  "id": "lieder-schroeter-an-laura",
+  "title": "An Laura",
+  "composer": "Corona Schröter",
+  "source": "OpenScore Lieder",
+  "sourceUrl": "https://raw.githubusercontent.com/OpenScore/Lieder/38c5db510224d9facdc4b08d741fc788cfb58ea8/scores/Schr%C3%B6ter%2C_Corona/25_Lieder/03_An_Laura/lc6019054.mscx",
+  "license": "CC0-1.0",
+  "features": [
+    "grand-staff",
+    "multi-part",
+    "single-key",
+    "flat-key",
+    "time-3/4",
+    "accidentals",
+    "lyrics",
+    "dynamics"
+  ],
+  "pages": 1,
+  "dpi": 150,
+  "engraving": "MuseScore 4",
+  "groundTruth": "MusicXML exported from the OpenScore .mscx"
+}

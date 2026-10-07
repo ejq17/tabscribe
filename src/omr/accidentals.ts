@@ -50,21 +50,28 @@ export function accidentalsFor(img: GImg, d: number, t: number, cx: number, cy: 
   const len = (s: Stroke) => s.bot - s.top + 1;
   for (const s1 of strokes) {
     const lowRel = (s1.bot - cy) / d;
+    // set when s1 is the right half of a natural / sharp pair: it is then not also a flat stem (the natural's right
+    // stroke plus the neighbouring head would otherwise read as a flat with a "bulb" and outbid the natural)
+    let pairedAsRight = false;
     // pairs: a stroke to the left within 0.18 .. 0.95 spaces
     for (const s0 of strokes) {
       if (s0 === s1 || s1.x0 - s0.x1 < 0.18 * d || s1.x0 - s0.x1 > 0.95 * d) continue;
       const dBot = s1.bot - s0.bot;
       if (dBot >= 0.55 * d && lowRel >= 0.9 && lowRel <= 2.4 && s0.bot - cy >= -0.3 * d && s0.bot - cy <= 1.5 * d && s1.x1 >= cx - 3.1 * d) {
         out.push({ kind: 'natural', x1: s1.x1, sx0: s0.x0, sx1: s1.x1, vcost: Math.abs(lowRel - 1.85) });
+        pairedAsRight = true;
       } else if (Math.abs(dBot) <= 0.5 * d && lowRel >= 0.7 && lowRel <= 2.0 && s1.x1 >= cx - 3.1 * d) {
         // slanted bars between the strokes: the middle band is inked
         const mid = fill(img, s0.x1 + 1, s1.x0 - 1, cy - 0.9 * d, cy + 0.9 * d);
-        if (mid >= 0.2) out.push({ kind: 'sharp', x1: s1.x1, sx0: s0.x0, sx1: s1.x1, vcost: Math.abs(lowRel - 1.4) });
+        if (mid >= 0.2) {
+          out.push({ kind: 'sharp', x1: s1.x1, sx0: s0.x0, sx1: s1.x1, vcost: Math.abs(lowRel - 1.4) });
+          pairedAsRight = true;
+        }
       }
     }
     // flat: single stroke with a bulb to the lower right
     const hasRightPartner = strokes.some((o) => o !== s1 && o.x0 - s1.x1 >= 0.18 * d && o.x0 - s1.x1 <= 0.95 * d);
-    if (!hasRightPartner && len(s1) >= 1.7 * d && Math.abs(s1.bot - 0.9 * d - cy) <= 0.7 * d) {
+    if (!hasRightPartner && !pairedAsRight && len(s1) >= 1.7 * d && Math.abs(s1.bot - 0.9 * d - cy) <= 0.7 * d) {
       const bulb = fill(img, s1.x1 + 1, s1.x1 + 0.85 * d, s1.bot - 1.4 * d, s1.bot - 0.1 * d);
       if (bulb >= 0.28 && s1.x1 + 0.85 * d >= cx - 3.3 * d && s1.x1 <= cx - 0.8 * d) out.push({ kind: 'flat', x1: s1.x1 + 0.85 * d, sx0: s1.x0, sx1: s1.x1, vcost: Math.abs(lowRel - 1.0) });
     }

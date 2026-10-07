@@ -1,0 +1,21 @@
+{
+  "id": "mutopia-bach-menuet-g",
+  "title": "Menuet in G (Anna Magdalena Notebook)",
+  "composer": "Johann Sebastian Bach (attrib.)",
+  "source": "Mutopia Project",
+  "sourceUrl": "https://www.mutopiaproject.org/ftp/BachJS/BWVAnh114/anna-magdalena-04-guitar/anna-magdalena-04-guitar.ly",
+  "license": "Public Domain",
+  "features": [
+    "grand-staff",
+    "single-key",
+    "sharp-key",
+    "time-3/4",
+    "accidentals",
+    "lyrics"
+  ],
+  "pages": 1,
+  "dpi": 150,
+  "engraving": "LilyPond (original Mutopia PDF)",
+  "groundTruth": "MIDI imported to MusicXML by MuseScore 4",
+  "note": "Guitar arrangement, melody over bass line, original LilyPond engraving. MusicXML is a MIDI import (see Carcassi note)."
+}

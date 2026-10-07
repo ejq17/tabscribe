@@ -1,21 +1,22 @@
 /// <reference lib="webworker" />
-import { recognizeImageData } from './assemble';
+import { recognizeImageDataWithChords } from './assemble';
 import type { RawImage, RecognizeOptions } from './types';
 
 export interface WorkerRequest {
   type: 'recognize';
   pages: { width: number; height: number; buffer: ArrayBuffer }[];
   defaultClef?: RecognizeOptions['defaultClef'];
+  instrument?: RecognizeOptions['instrument'];
 }
 
 export type WorkerResponse =
   | { type: 'progress'; stage: string; fraction: number; page?: number }
-  | { type: 'done'; score: ReturnType<typeof recognizeImageData> }
+  | { type: 'done'; score: Awaited<ReturnType<typeof recognizeImageDataWithChords>> }
   | { type: 'error'; message: string };
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
 
-ctx.onmessage = (ev: MessageEvent<WorkerRequest>) => {
+ctx.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
   const msg = ev.data;
   if (msg.type !== 'recognize') return;
   try {
@@ -24,8 +25,9 @@ ctx.onmessage = (ev: MessageEvent<WorkerRequest>) => {
       height: p.height,
       data: new Uint8ClampedArray(p.buffer),
     }));
-    const score = recognizeImageData(pages, {
+    const score = await recognizeImageDataWithChords(pages, {
       defaultClef: msg.defaultClef,
+      instrument: msg.instrument,
       onProgress: (p) => ctx.postMessage({ type: 'progress', ...p } satisfies WorkerResponse),
     });
     ctx.postMessage({ type: 'done', score } satisfies WorkerResponse);

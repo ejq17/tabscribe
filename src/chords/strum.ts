@@ -22,7 +22,10 @@ export function strumChart(score: Score, chords: ChordEvent[]): StrumLine[] {
     for (const m of group) {
       const beat = (score.ppq * 4) / m.timeSignature.denominator;
       for (let t = m.startTick; t < m.endTick - 1e-6; t += beat) {
-        const ev = sorted.find((c) => c.tick >= t && c.tick < t + beat);
+        // chords read from the printed score hold until the next chord; inferred ones only mark their own beat
+        const ev =
+          sorted.find((c) => c.tick >= t && c.tick < t + beat) ??
+          [...sorted].reverse().find((c) => c.source === 'omr' && c.tick < t && c.tick + c.duration > t);
         cells.push({ tick: t, chord: ev ? ev.name : null });
       }
     }

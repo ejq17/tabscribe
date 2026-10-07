@@ -355,19 +355,84 @@ export function classifyDigit(d: Uint8Array, w: number, h: number): number {
   const rowsBand = Math.max(1, Math.round(0.14 * h));
   const topRun = rowRunFrac(0, rowsBand - 1);
   const botRun = rowRunFrac(h - rowsBand, h - 1);
+  // a 1 (with or without flag / base serif): one stem running nearly the full height in a narrow box
+  if (w < 0.55 * h && maxCol >= 0.9 && holes.length === 0) return 1;
+  // A "4" in a bold sans face: a full-width crossbar at 55-82% of the height and, below it, ONE narrow stem on the right
+  // (above the bar there is a diagonal reaching the left edge). Staff-line removal nicks the stem or the triangle so
+  // the hole / long-column tests below can fail, whereas this survives. The ink below the bar must span < 0.45 w and
+  // sit right of centre (a 6 / 8 / 0 / 9 has its loop sides across the whole width there; 2 / 5 / 7 have no such bar). The crossbar must also stick
+  // out to the right of the stem (hi <= 0.9 w): a 9's tail ends flush with its loop.
+  {
+    let barA = -1;
+    let barB = -1;
+    for (let y = Math.round(0.55 * h); y <= Math.round(0.82 * h); y++) {
+      if (rowRunFrac(y, y) >= 0.75) {
+        if (barA < 0) barA = y;
+        barB = y;
+      } else if (barA >= 0) break;
+    }
+    // a 9 / 6 / 0 / 8 loop is a WIDE hole (>= 0.3 w); a 4's triangle is a thin sliver
+    const wideHole = holes.some((hl) => hl.x1 - hl.x0 + 1 >= 0.3 * w);
+    if (barA >= 0 && !wideHole) {
+      // only the first rows below the bar: a staff line crossing the stem near the bottom leaves a wide residue row there
+      const yEnd = Math.min(Math.floor(0.9 * h) - 1, barB + 3);
+      let lo = w;
+      let hi = -1;
+      for (let y = barB + 1; y <= yEnd; y++)
+        for (let x = 0; x < w; x++)
+          if (d[y * w + x]) {
+            if (x < lo) lo = x;
+            if (x > hi) hi = x;
+          }
+      let leftDiag = false;
+      for (let y = Math.round(0.35 * h); y < barA && !leftDiag; y++) for (let x = 0; x < Math.round(0.3 * w) && !leftDiag; x++) if (d[y * w + x]) leftDiag = true;
+      if (hi >= lo && yEnd - (barB + 1) >= 1 && hi - lo + 1 <= 0.45 * w && (lo + hi) / 2 > 0.5 * w && hi <= 0.9 * w && leftDiag) return 4;
+    }
+  }
   if (holes.length >= 2) return 8;
   if (holes.length === 1) {
     const hc = (holes[0].y0 + holes[0].y1) / 2 / h;
-    if (maxCol >= 0.85 && maxColX > 0.5 * w) return 4;
+    // the 4's stem is left of the right edge (its crossbar sticks out); a 9's right stroke IS the right edge
+    if (maxCol >= 0.85 && maxColX > 0.5 * w && maxColX <= 0.88 * w) return 4;
+    const hf = (holes[0].y1 - holes[0].y0 + 1) / h;
+    if (hc >= 0.42 && hc <= 0.58 && hf >= 0.4) return 0; // a long hole centred in the box: zero
     if (hc >= 0.5) return 6;
     return 9;
   }
   // no holes
   if (w < 0.4 * h && maxCol > 0.8) return 1;
-  if (maxCol >= 0.85 && maxColX > 0.55 * w && botRun < 0.5) return 4; // open-top 4
+  if (maxCol >= 0.85 && maxColX > 0.55 * w && maxColX <= 0.88 * w && botRun < 0.5) return 4; // open-top 4
   if (botRun >= 0.8 && topRun < 0.9) return 2;
   if (topRun >= 0.85 && botRun < 0.4) return 7;
-  if (topRun >= 0.85) return 5;
+  // A 3 with a flat top bar (bold / MuseScore faces) looks like a 5 from the top. But its upper bowl closes the RIGHT side
+  // at 20-40% of the height, whereas a 5 is open there (bar, then a stem on the left only).
+  let rightCov = 0;
+  {
+    let n = 0;
+    for (let y = Math.round(0.2 * h); y <= Math.round(0.4 * h); y++) {
+      n++;
+      for (let x = Math.ceil(0.65 * w); x < w; x++)
+        if (d[y * w + x]) {
+          rightCov++;
+          break;
+        }
+    }
+    rightCov = n ? rightCov / n : 0;
+  }
+  if (topRun >= 0.85) return rightCov >= 0.8 && botRun >= 0.4 && holes.length === 0 ? 3 : 5;
+  // a 5 whose top bar is shorter than the bowl: its stem makes the upper-left a solid column, a 3 is open there
+  {
+    let rowsWithLeft = 0;
+    let rowsN = 0;
+    for (let y = Math.round(0.15 * h); y <= Math.round(0.42 * h); y++) {
+      rowsN++;
+      for (let x = 0; x < Math.max(2, Math.round(0.3 * w)); x++) if (d[y * w + x]) {
+        rowsWithLeft++;
+        break;
+      }
+    }
+    if (topRun >= 0.6 && rowsN > 0 && rowsWithLeft >= 0.85 * rowsN && botRun < 0.8 && rightCov < 0.6) return 5;
+  }
   if (botRun < 0.8) return 3;
   return -1;
 }
@@ -610,6 +675,25 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
         const atLeft = (s + e) / 2 <= staff.left - rx0 + 1.0 * d;
         if (!atLeft && up > 0.55 * d && yA - up > 1) continue;
         if (!atLeft && down > 0.55 * d && yB + down < H - 2) continue;
+        // A barline stands in clear space: the columns 0.5..1.2 d to either side hold (almost) no ink along the staff.
+        // The aligned edges of a stacked time-signature "3 over 4" (or any glyph whose strokes happen to line up through
+        // all five lines) have the digit body right next to them.
+        if (!atLeft) {
+          const side = (xa: number, xb: number): number => {
+            let n = 0;
+            let t2 = 0;
+            for (let y = yA; y <= yB; y++)
+              for (let x = Math.max(0, xa); x <= Math.min(W - 1, xb); x++) {
+                t2++;
+                n += clean.d[y * W + x];
+              }
+            return t2 ? n / t2 : 0;
+          };
+          // only the LEFT side counts: the digit body sits left of the aligned stem edge, whereas a roll sign / accidental /
+          // clef change can legitimately follow a barline. A stem (2 px) in the band stays well under the density limit.
+          const dl = side(s - Math.round(1.2 * d), s - Math.round(0.5 * d));
+          if (dl >= 0.2) continue;
+        }
       }
       barLocal.push((s + e + 1) / 2);
       for (let y = Math.max(0, yA - 2); y <= Math.min(H - 1, yB + 2); y++) {
@@ -655,7 +739,14 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
   };
 
   // ---- clef zone: the (possibly fragmented by line removal) glyph at the staff start
-  const sortedAll = comps.filter((c) => !isBarline(c) && c.area >= 0.1 * d * d).sort((a, b) => a.x0 - b.x0);
+  // a measure number printed in the left margin (digits left of the staff, <3 d tall) is not part of the clef zone: it
+  // used to start the zone and end it again at the gap before the real clef
+  const sortedAll = comps
+    .filter((c) => !isBarline(c) && c.area >= 0.1 * d * d && !(c.x1 <= lx(staff.left) + 0.5 * d && c.y1 - c.y0 + 1 < 3 * d))
+    // the system line joining the staves (cut by the crop / neighbour clip so it does not span this staff): a thin vertical
+    // stroke right at the staff start, which would otherwise open the zone and end it again at the gap before the clef
+    .filter((c) => !(c.x0 <= lx(staff.left) + 1.0 * d && c.x1 - c.x0 + 1 <= Math.max(2 * t + 1, 0.3 * d) && c.y1 - c.y0 + 1 >= 2.5 * d))
+    .sort((a, b) => a.x0 - b.x0);
   let zone: { x0: number; x1: number; y0: number; y1: number; ids: Set<number> } | null = null;
   for (const c of sortedAll) {
     if (!zone) {
@@ -688,7 +779,26 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
     const spans = zone.y0 < topL - 0.5 * d && zone.y1 > botL + 0.5 * d;
     // a treble clef has one long vertical axis; a cluster of overlapping flats does not
     const clefStroke = findStrokes({ w: W, h: H, d: src.d }, zone.x0, zone.x1 + 1, Math.round(zone.y0), Math.round(zone.y1), Math.round(4.0 * d), Math.max(4, Math.round(0.9 * d)));
-    if ((zh >= 5 * d || spans) && clefStroke.some((k) => k.x0 > staff.left - rx0 + 0.8 * d)) {
+    // Real engravings (Emmentaler-style glyphs) draw the clef axis slanted and curving, so no column holds a long
+    // straight run at all. The corroborating shape test is then: the glyph is a single tall object (>= 5.5 d, i.e.
+    // a clef, not the 3.5 d flat/sharp/bass-clef family) that reaches past BOTH outer staff lines and leaves almost no
+    // empty rows in between (a cluster of loose accidentals or a text blob has gaps; line removal costs a few rows).
+    // chord symbols / text above the staff can chain onto the clef zone: judge the part of the glyph that is on the staff
+    const body = comps.filter((c) => zone!.ids.has(c.id) && c.y1 >= topL && c.y0 <= botL);
+    const bx0 = Math.min(...body.map((c) => c.x0));
+    const bx1 = Math.max(...body.map((c) => c.x1));
+    const by0 = Math.min(...body.map((c) => c.y0));
+    const by1 = Math.max(...body.map((c) => c.y1));
+    const bh = by1 - by0 + 1;
+    const bSpans = by0 < topL - 0.5 * d && by1 > botL + 0.5 * d;
+    let rowsInked = 0;
+    for (let y = by0; y <= by1; y++) {
+      let any = false;
+      for (let x = bx0; x <= bx1 && !any; x++) if (clean.d[y * W + x]) any = true;
+      if (any) rowsInked++;
+    }
+    const contiguousTall = body.length > 0 && bh >= 5.5 * d && bSpans && rowsInked >= 0.88 * bh && bx1 - bx0 + 1 <= 4.5 * d;
+    if (((zh >= 5 * d || spans) && clefStroke.some((k) => k.x0 > staff.left - rx0 + 0.8 * d)) || contiguousTall) {
       for (const id of zone.ids) used.add(id);
       clefEnd = zone.x1;
       clef = 'treble';
@@ -740,13 +850,63 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
   const keyRead = readKeySignature(gImg, d, topL, botL, clefEnd);
   const keyFifths = keyRead.fifths;
   const keyEnd = keyFifths !== 0 ? keyRead.endX : clefEnd;
-  let timeSig: { numerator: number; denominator: number } | undefined;
-  let timeSigUnreadable = false;
-  const timeComps = new Set<number>();
-  {
-    const winA = keyEnd + 0.1 * d;
+  /**
+   * Read a time signature (stacked digits or C / cut C) whose glyphs start right of `keyEndX` and begin before `xMax`
+   * (local x). Used for the prefix of the staff and for courtesy signatures after a double barline.
+   */
+  const readTimeSig = (keyEndX: number, xMax: number, ignoreUsed: boolean): { timeSig?: { numerator: number; denominator: number }; unreadable: boolean; x1: number } => {
+    let timeSig: { numerator: number; denominator: number } | undefined;
+    let timeSigUnreadable = false;
+    const timeComps = new Set<number>();
+    const winA = keyEndX + 0.1 * d;
+    // NOTE (tried, not adopted): rebuilding this window from the RAW crop with only pure line pixels erased (run <= t + 1)
+    // keeps arcs that lie on an outer line, but it made other pieces' digits misread (romanze 90% -> 40% pitch F1) and
+    // still cannot restore an arc that lies completely ON the line, so the general cleaned image is used.
+    // Stacked digits ("3" over "4") touch at the middle line once the line is removed and arrive as ONE ~4 d tall
+    // component. Cut such a component at the middle line into two digit-sized pieces (the
+    // pieces keep the label id, so reading and `used` bookkeeping work unchanged). Both halves must read as digits and
+    // the rows must be wide (a stem + head never is), otherwise the component is left alone.
+    const splitStacked = (c: Comp): Comp[] => {
+      const w = ww(c);
+      const h = hh(c);
+      if (h < 3.2 * d || h > 4.8 * d || w > 1.9 * d || w < 0.5 * d) return [c];
+      if (c.y0 < topL - 0.4 * d || c.y1 > botL + 0.4 * d) return [c];
+      const rowInk = (y: number): number => {
+        let n = 0;
+        for (let x = c.x0; x <= c.x1; x++) if (labels[y * W + x] === c.id) n++;
+        return n;
+      };
+      let wide = 0;
+      for (let y = c.y0; y <= c.y1; y++) if (rowInk(y) >= 0.3 * w) wide++;
+      if (wide < 0.7 * h) return [c];
+      // the glyph halves meet ON the middle line: cut there (a minimum-ink search is fooled by the 3's waist)
+      const cut = Math.ceil(midL);
+      if (cut - c.y0 < 1.2 * d || c.y1 - cut < 1.2 * d) return [c];
+      const mk = (ya: number, yb: number): Comp | null => {
+        let x0 = Infinity;
+        let x1 = -Infinity;
+        let y0 = Infinity;
+        let y1 = -Infinity;
+        let area = 0;
+        for (let y = ya; y <= yb; y++)
+          for (let x = c.x0; x <= c.x1; x++)
+            if (labels[y * W + x] === c.id) {
+              area++;
+              if (x < x0) x0 = x;
+              if (x > x1) x1 = x;
+              if (y < y0) y0 = y;
+              if (y > y1) y1 = y;
+            }
+        return area ? { id: c.id, x0, x1, y0, y1, area } : null;
+      };
+      const up = mk(c.y0, cut - 1);
+      const dn = mk(cut, c.y1);
+      if (!up || !dn || readDigitComp(labels, W, up) < 0 || readDigitComp(labels, W, dn) < 0) return [c];
+      return [up, dn];
+    };
     const pre = comps
-      .filter((c) => !used.has(c.id) && !isBarline(c) && c.area >= 0.1 * d * d && c.x0 >= winA && c.x0 <= keyEnd + 3.4 * d)
+      .filter((c) => (ignoreUsed || !used.has(c.id)) && !isBarline(c) && c.area >= 0.1 * d * d && c.x0 >= winA && c.x0 <= xMax)
+      .flatMap(splitStacked)
       .sort((a, b) => a.x0 - b.x0);
     const digitLike = (c: Comp) =>
       hh(c) >= 1.2 * d && hh(c) <= 2.6 * d && ww(c) <= 1.9 * d && c.y0 >= topL - 0.4 * d && c.y1 <= botL + 0.4 * d &&
@@ -788,21 +948,67 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
       return h <= 2.7 * d && rightInk <= 0.3 * rows * rw;
     };
     const cc = pre.find(isC);
+    const fragIds: number[] = [];
     const stackX = topRow.length > 0 && botRow.length > 0 && Math.abs(topRow[0].x0 - botRow[0].x0) < 1.2 * d ? topRow[0].x0 : Infinity;
     if (cc && cc.x0 < stackX) {
       timeComps.add(cc.id);
-      const st = shapeStats(clean, labels, cc);
-      timeSig = st.maxVRunFrac >= 0.93 ? { numerator: 2, denominator: 2 } : { numerator: 4, denominator: 4 };
+      // The bold left arc of a plain C is itself a near-full-height vertical run, so the run alone says nothing. Cut
+      // time has a separate thin stroke through the MIDDLE of the glyph that sticks out above and below the arcs
+      // (total height ~3.4 d against ~2.2 d for a C): require a tall glyph and a full-height run in the central columns.
+      const w = ww(cc);
+      const h = hh(cc);
+      let midRun = 0;
+      for (let x = cc.x0 + Math.round(0.3 * w); x <= cc.x0 + Math.round(0.7 * w); x++) {
+        let run = 0;
+        for (let y = cc.y0; y <= cc.y1; y++) {
+          if (labels[y * W + x] === cc.id) {
+            run++;
+            if (run > midRun) midRun = run;
+          } else run = 0;
+        }
+      }
+      timeSig = h >= 2.6 * d && midRun >= 0.85 * h ? { numerator: 2, denominator: 2 } : { numerator: 4, denominator: 4 };
+    } else if (stackX === Infinity && pre.length > 0 && (() => {
+      // A common-time C that staff-line removal cut into pieces (left arc + terminals): judge the cluster as a whole.
+      // It must be one glyph ~1-2 d wide and ~2-2.8 d tall centred on the middle line, with a tall left arc and an
+      // EMPTY middle on the right (the opening of the C); chord text / rests / noteheads fail one of these.
+      // only comps lying on the staff (text / chord symbols above it can come first in x order)
+      const onStaff = pre.filter((c) => c.y0 >= topL - 0.5 * d && c.y1 <= botL + 0.5 * d);
+      if (onStaff.length === 0) return false;
+      const g0 = onStaff[0];
+      const cl = onStaff.filter((c) => c.x0 <= g0.x0 + 2.0 * d && c.x0 >= g0.x0 - 0.3 * d);
+      const bx0 = Math.min(...cl.map((c) => c.x0));
+      const bx1 = Math.max(...cl.map((c) => c.x1));
+      const by0 = Math.min(...cl.map((c) => c.y0));
+      const by1 = Math.max(...cl.map((c) => c.y1));
+      const w = bx1 - bx0 + 1;
+      const h = by1 - by0 + 1;
+      if (cl.length < 2 || w < 0.8 * d || w > 2.2 * d || h < 1.8 * d || h > 2.9 * d) return false;
+      if (Math.abs((by0 + by1) / 2 - midL) > 0.6 * d) return false;
+      if (hh(g0) < 1.6 * d || ww(g0) > 1.3 * d) return false;
+      // the opening of the C: right quarter of the glyph empty just above OR just below the middle line (line removal
+      // can leave a stub of a terminal on the middle line itself, so the rows within 0.1 d of it are skipped)
+      const openAt = (ya: number, yb: number): boolean => {
+        let ink = 0;
+        let tot = 0;
+        for (let y = Math.round(ya); y <= Math.round(yb); y++)
+          for (let x = bx1 - Math.round(0.25 * w); x <= bx1; x++) {
+            tot++;
+            if (clean.d[y * W + x]) ink++;
+          }
+        return ink <= 0.15 * tot;
+      };
+      if (!openAt(midL - 0.5 * d, midL - 0.12 * d) && !openAt(midL + 0.12 * d, midL + 0.5 * d)) return false;
+      for (const c of cl) fragIds.push(c.id);
+      return true;
+    })()) {
+      for (const id of fragIds) timeComps.add(id);
+      timeSig = { numerator: 4, denominator: 4 };
     } else if (stackX < Infinity) {
       const read = (row: Comp[]): number => {
         let n = 0;
         for (const c of row) {
-          const w = ww(c);
-          const h = hh(c);
-          const g = new Uint8Array(w * h);
-          for (let y = 0; y < h; y++)
-            for (let x = 0; x < w; x++) g[y * w + x] = labels[(c.y0 + y) * W + c.x0 + x] === c.id ? 1 : 0;
-          const dg = classifyDigit(g, w, h);
+          const dg = readDigitComp(labels, W, c);
           if (dg < 0) return -1;
           n = n * 10 + dg;
         }
@@ -811,21 +1017,34 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
       const num = read(topRow);
       const den = read(botRow);
       for (const c of [...topRow, ...botRow]) timeComps.add(c.id);
-      if (num >= 1 && num <= 32 && [1, 2, 4, 8, 16, 32].includes(den)) timeSig = { numerator: num, denominator: den };
+      // A bold numeral sits ON the top / bottom staff line, and the general line removal eats an arc lying on a line: a "2"
+      // then comes out as a closed 6 / 8 (and a "3" or "5" can lose its top bar). A hole-bearing numerator read from a piece
+      // that touches an outer line is therefore not trusted: report "unreadable" so the assembler infers the meter from how
+      // the bars add up instead of committing to a wrong printed one.
+      const touchesLine = topRow.some((c) => c.y0 <= topL + 0.25 * d) || botRow.some((c) => c.y1 >= botL - 0.25 * d);
+      const holeNumeral = num === 6 || num === 8 || num === 9 || num === 0;
+      if (touchesLine && holeNumeral && topRow.length === 1) timeSigUnreadable = true;
+      else if (num >= 1 && num <= 32 && [1, 2, 4, 8, 16, 32].includes(den)) timeSig = { numerator: num, denominator: den };
       else timeSigUnreadable = true;
     }
-  }
+      let x1 = keyEndX;
+    for (const id of timeComps) x1 = Math.max(x1, comps[id - 1].x1);
+    return { timeSig, unreadable: timeSigUnreadable, x1 };
+  };
+  const mainTime = readTimeSig(keyEnd, keyEnd + 3.4 * d, false);
+  const timeSig = mainTime.timeSig;
+  const timeSigUnreadable = mainTime.unreadable;
   let prefixEnd = Math.max(clefEnd, keyEnd);
-  for (const id of timeComps) prefixEnd = Math.max(prefixEnd, comps[id - 1].x1);
+  prefixEnd = Math.max(prefixEnd, mainTime.x1);
   const musicStart = prefixEnd + 0.2 * d;
   for (const c of comps) if (c.x0 >= clefEnd - 0.3 * d && c.x1 <= prefixEnd + 0.15 * d) used.add(c.id);
-  for (const id of timeComps) used.add(id);
 
   // ---- slash marks (chord comping): thick diagonal strokes, no round head
   const slashes: { cx: number; cy: number }[] = [];
   const slashIds = new Set<number>();
   {
-    const hmin0 = Math.max(3, Math.round(0.4 * d));
+    // a slash is ~0.4 d thick horizontally only at its steepest; take the core with a lower bar so it survives
+    const hmin0 = Math.max(2, Math.round(0.25 * d));
     for (const c of comps) {
       if (used.has(c.id) || isBarline(c) || c.x0 < musicStart - 0.2 * d) continue;
       const w = ww(c);
@@ -889,24 +1108,42 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
       let count = 1;
       let guessed = true;
       const cxm = (b.x0 + b.x1) / 2;
-      const cand = comps
-        .filter((c) => c.y1 < topL - 0.3 * d && c.y0 > topL - 4.2 * d && hh(c) >= 0.8 * d && hh(c) <= 2.8 * d && ww(c) <= 1.9 * d && c.x0 >= b.x0 && c.x1 <= b.x1)
-        .sort((a, bb) => Math.abs((a.x0 + a.x1) / 2 - cxm) - Math.abs((bb.x0 + bb.x1) / 2 - cxm));
+      const frags = comps.filter((c) => c.y1 < topL - 0.3 * d && c.y0 > topL - 4.2 * d && hh(c) >= 0.5 * d && hh(c) <= 2.8 * d && ww(c) <= 1.9 * d && c.x0 >= b.x0 && c.x1 <= b.x1 && c.area >= 0.1 * d * d).sort((a, bb) => a.x0 - bb.x0);
+      // The digit is read from the RAW crop: ledger-line removal also eats the crossbar of a 4 (a 2 px bar of one glyph
+      // width above the staff looks like a ledger line), which is what made it read as a 3.
+      // a bold digit often arrives in two pieces (diagonal + stem of a 4, the halves of a 5 ...): fuse fragments that
+      // overlap horizontally and touch / nearly touch vertically into one glyph before reading
+      type Part = { ids: Set<number>; x0: number; y0: number; x1: number; y1: number };
+      const cand: Part[] = [];
+      for (const c of frags) {
+        const host = cand.find((p) => {
+          const ov = Math.min(p.x1, c.x1) - Math.max(p.x0, c.x0) + 1;
+          return ov >= 0.5 * Math.min(p.x1 - p.x0 + 1, ww(c)) && c.y0 <= p.y1 + 0.4 * d && c.y1 >= p.y0 - 0.4 * d && Math.max(p.y1, c.y1) - Math.min(p.y0, c.y0) + 1 <= 2.8 * d;
+        });
+        if (host) {
+          host.ids.add(c.id);
+          host.x0 = Math.min(host.x0, c.x0);
+          host.x1 = Math.max(host.x1, c.x1);
+          host.y0 = Math.min(host.y0, c.y0);
+          host.y1 = Math.max(host.y1, c.y1);
+        } else cand.push({ ids: new Set([c.id]), x0: c.x0, y0: c.y0, x1: c.x1, y1: c.y1 });
+      }
+      cand.sort((a, bb) => Math.abs((a.x0 + a.x1) / 2 - cxm) - Math.abs((bb.x0 + bb.x1) / 2 - cxm));
       if (cand.length > 0) {
         const seed = cand[0];
         const group = [seed];
         for (const c of cand.slice(1)) {
-          const near = group.some((g) => Math.abs(c.y0 - g.y0) <= 0.4 * d && (c.x0 - g.x1 <= 0.6 * d && g.x0 - c.x1 <= 0.6 * d));
+          const near = group.some((g) => Math.abs(c.y0 - g.y0) <= 0.5 * d && (c.x0 - g.x1 <= 0.6 * d && g.x0 - c.x1 <= 0.6 * d));
           if (near && group.length < 3) group.push(c);
         }
         group.sort((a, bb) => a.x0 - bb.x0);
         let n = 0;
         let okRead = true;
         for (const c of group) {
-          const w = ww(c);
-          const h = hh(c);
+          const w = c.x1 - c.x0 + 1;
+          const h = c.y1 - c.y0 + 1;
           const g = new Uint8Array(w * h);
-          for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) g[y * w + x] = labels[(c.y0 + y) * W + c.x0 + x] === c.id ? 1 : 0;
+          for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) g[y * w + x] = src.d[(c.y0 + y) * W + c.x0 + x];
           const dg = classifyDigit(g, w, h);
           if (dg < 0) {
             okRead = false;
@@ -1454,9 +1691,23 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
       continue;
     }
     // a narrow tall curve (parenthesis around a courtesy accidental, stray bracket) is no rest
-    if (w < 1.1 * d && h >= 2.4 * d) continue;
+    // (a real quarter rest is just as narrow and tall, but a solid zigzag: >= 0.3 d of ink per row on average, whereas a
+    // parenthesis / bracket stroke is only ~0.2 d thick)
+    if (w < 1.1 * d && h >= 2.4 * d && c.area / h < 0.3 * d) continue;
+    // thin vertical bits (the stems of a natural sign, a dynamic hairpin end) are never a rest
+    if (w < 0.5 * d) continue;
     if (w <= 2.2 * d && h >= 1.2 * d && h <= 3.7 * d && (h >= 2.55 * d || w <= 1.7 * d)) {
-      const kind: RestKind = h >= 2.55 * d ? 'quarter' : 'eighth';
+      // quarter rest: ~3 d tall zigzag, mass all the way down (curl at the bottom). Eighth rest: ~1.8-2.1 d, a round
+      // blob at the top and a thin diagonal stem below, so the lower half is only ~0.15 d of ink per row. The height
+      // alone is not enough: line removal shortens a quarter rest to ~2.2 d, hence the lower-half test.
+      let low = 0;
+      let lowRows = 0;
+      for (let y = Math.ceil(c.y0 + 0.5 * h); y <= c.y1; y++) {
+        lowRows++;
+        for (let x = c.x0; x <= c.x1; x++) if (clean.d[y * W + x]) low++;
+      }
+      const lowAvg = lowRows ? low / lowRows / d : 0;
+      const kind: RestKind = h >= 2.55 * d || (h >= 2.1 * d && lowAvg >= 0.28) ? 'quarter' : 'eighth';
       rests.push({ kind, x0: c.x0 + rx0, x1: c.x1 + rx0, y0: c.y0 + ry0, y1: c.y1 + ry0, dots: 0 });
     }
   }
@@ -1545,11 +1796,75 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
 
   // ---- barlines (merge double / final bars)
   const mergedBars: number[] = [];
+  const doubledBar: boolean[] = [];
   for (const x of barLocal.map((v) => v + rx0).filter((v) => v > musicStart + rx0).sort((a, b) => a - b)) {
-    if (mergedBars.length && x - mergedBars[mergedBars.length - 1] < 1.3 * d) mergedBars[mergedBars.length - 1] = x;
-    else mergedBars.push(x);
+    if (mergedBars.length && x - mergedBars[mergedBars.length - 1] < 1.3 * d) {
+      mergedBars[mergedBars.length - 1] = x;
+      doubledBar[doubledBar.length - 1] = true;
+    } else {
+      mergedBars.push(x);
+      doubledBar.push(false);
+    }
   }
   const barX = mergedBars;
+
+  // ---- courtesy key / time signatures after a double barline (mid staff) or after the last barline of the staff
+  const signatureChanges: NonNullable<StaffSymbols['signatureChanges']> = [];
+  barX.forEach((bx, k) => {
+    const last = k === barX.length - 1;
+    if (!last && !doubledBar[k]) return;
+    const xb = bx - rx0;
+    const winEnd = last ? lx(staff.right) - 0.2 * d : barX[k + 1] - rx0 - 0.5 * d;
+    const start = xb + 0.5 * d;
+    if (winEnd - start < 1.5 * d) return;
+    // key: naturals (cancelling the old key => C major) are tried FIRST, as offset stroke pairs: readKeySignature would
+    // take a pair of nearly level verticals for a sharp. Then flats / sharps by their stems.
+    let fifths: number | undefined;
+    let keyEndX = start;
+    {
+      const strokes = findStrokes(gImg, Math.round(start), Math.round(Math.min(winEnd, start + 5 * d)), Math.round(topL - 0.8 * d), Math.round(botL + 0.8 * d), Math.round(1.3 * d), Math.max(3, Math.round(0.42 * d)));
+      let n = 0;
+      let endN = start;
+      for (let i = 0; i + 1 < strokes.length; ) {
+        const a = strokes[i];
+        const b = strokes[i + 1];
+        // natural: right stroke hangs 0.45..1.3 d lower than the left one, 0.18..0.95 d apart (a sharp's strokes are level)
+        const dBot = b.bot - a.bot;
+        if (b.x0 - a.x1 >= 0.18 * d && b.x0 - a.x1 <= 0.95 * d && dBot >= 0.45 * d && dBot <= 1.3 * d && (n === 0 || a.x0 - endN <= 1.4 * d)) {
+          n++;
+          endN = b.x1;
+          i += 2;
+        } else if (n > 0) break;
+        else i++;
+      }
+      if (n > 0) {
+        fifths = 0;
+        keyEndX = endN;
+      }
+    }
+    if (fifths === undefined) {
+      const kr = readKeySignature(gImg, d, topL, botL, start);
+      if (kr.fifths !== 0 && kr.endX <= winEnd) {
+        fifths = kr.fifths;
+        keyEndX = kr.endX;
+      }
+    }
+    const tr = readTimeSig(keyEndX, Math.min(winEnd, keyEndX + 3.4 * d), true);
+    if (fifths === undefined && !tr.timeSig) return;
+    let x1 = keyEndX;
+    x1 = Math.max(x1, tr.x1);
+    // x0 starts right behind the barline (a flat's bulb can sit left of the first stem the key reader found)
+    const sc: (typeof signatureChanges)[number] = { barline: k, x0: bx + 0.2 * d, x1: x1 + rx0 };
+    if (fifths !== undefined) sc.keyFifths = fifths;
+    if (tr.timeSig) sc.timeSig = tr.timeSig;
+    signatureChanges.push(sc);
+  });
+  if (signatureChanges.length) {
+    // glyph fragments of the courtesy signature (flat bulbs, digit bowls) are not noteheads
+    const inSig = (x: number) => signatureChanges.some((c) => x >= c.x0 - 0.3 * d && x <= c.x1 + 0.3 * d);
+    for (let i = noteheads.length - 1; i >= 0; i--) if (inSig(noteheads[i].cx)) noteheads.splice(i, 1);
+    for (let i = rests.length - 1; i >= 0; i--) if (inSig((rests[i].x0 + rests[i].x1) / 2)) rests.splice(i, 1);
+  }
 
   // positions of rests must be after the prefix
   const restsAfter = rests.filter((r) => r.x0 > musicStart + rx0 - 0.1 * d);
@@ -1576,5 +1891,6 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
     tupletCands: tupletScan.brackets,
     tieOut,
     tieOuts,
+    signatureChanges: signatureChanges.length ? signatureChanges : undefined,
   };
 }

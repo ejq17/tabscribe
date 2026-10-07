@@ -12,6 +12,15 @@ export default defineConfig({
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2,mp3,wasm,json,txt}'],
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
+        // chord-OCR assets (~15 MB, lazy) are cached on first use instead of precached
+        globIgnores: ['ocr/**'],
+        runtimeCaching: [
+          {
+            urlPattern: ({ url }) => url.pathname.startsWith('/tabscribe/ocr/'),
+            handler: 'CacheFirst',
+            options: { cacheName: 'tabscribe-ocr', expiration: { maxEntries: 10 }, cacheableResponse: { statuses: [0, 200] } },
+          },
+        ],
       },
       manifest: {
         name: 'TabScribe',

@@ -113,6 +113,17 @@ export interface Track {
   isGuitarTarget?: boolean;
 }
 
+/** A chord symbol read from the printed score by OMR (see `meta.omrChords`). */
+export interface OmrChord {
+  /** 0-based measure index as counted by the OMR assembler */
+  measure: number;
+  /** absolute tick (nearest beat of its measure) */
+  tick: number;
+  text: string;
+  chord: { root: string; quality: string; bass?: string };
+  confidence: number;
+}
+
 export interface ScoreMeta {
   title?: string;
   composer?: string;
@@ -122,6 +133,10 @@ export interface ScoreMeta {
   sourcePages?: string[];
   /** Importer-specific warnings to show the user */
   warnings?: string[];
+  /** OMR: chord symbols read from the page; preferred over chords inferred from notes */
+  omrChords?: OmrChord[];
+  /** OMR: bars written in slash / chord-hit notation (no notes) */
+  omrSlashMeasures?: { index: number; tick: number; length: number }[];
   [k: string]: unknown;
 }
 

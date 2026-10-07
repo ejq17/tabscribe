@@ -9,6 +9,8 @@ export interface ChordEvent {
   quality: string;
   bass?: number;
   pitches: number[];
+  /** 'omr' = read from the printed score (not inferred from notes) */
+  source?: 'omr';
 }
 
 /** Chord quality templates: semitone intervals above the root. */

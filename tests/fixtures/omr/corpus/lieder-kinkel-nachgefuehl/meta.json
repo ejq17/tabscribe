@@ -1,0 +1,26 @@
+{
+  "id": "lieder-kinkel-nachgefuehl",
+  "title": "Nachgefühl",
+  "composer": "Johanna Kinkel",
+  "source": "OpenScore Lieder",
+  "sourceUrl": "https://raw.githubusercontent.com/OpenScore/Lieder/38c5db510224d9facdc4b08d741fc788cfb58ea8/scores/Kinkel%2C_Johanna/6_Lieder%2C_Op.10/1_Nachgef%C3%BChl/lc6177220.mscx",
+  "license": "CC0-1.0",
+  "features": [
+    "grand-staff",
+    "multi-part",
+    "single-key",
+    "sharp-key",
+    "time-4/4",
+    "tuplets",
+    "slurs",
+    "accidentals",
+    "lyrics",
+    "dynamics",
+    "fermata",
+    "repeats"
+  ],
+  "pages": 1,
+  "dpi": 150,
+  "engraving": "MuseScore 4",
+  "groundTruth": "MusicXML exported from the OpenScore .mscx"
+}

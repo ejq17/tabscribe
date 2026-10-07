@@ -142,6 +142,14 @@ export default function Settings() {
               <option value="bass">Bass</option>
             </select>
           </label>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={settings.guitarOctave}
+              onChange={(e) => setSettings({ guitarOctave: e.target.checked })}
+            />{' '}
+            Sheet music is written for guitar (sounds an octave lower)
+          </label>
         </section>
 
         <section>

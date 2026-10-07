@@ -1,0 +1,23 @@
+{
+  "id": "lieder-hensel-maiabend",
+  "title": "Der Maiabend (Op. 9 no. 5)",
+  "composer": "Fanny Hensel",
+  "source": "OpenScore Lieder",
+  "sourceUrl": "https://raw.githubusercontent.com/OpenScore/Lieder/38c5db510224d9facdc4b08d741fc788cfb58ea8/scores/Hensel%2C_Fanny/6_Lieder%2C_Op.9/5_Der_Maiabend/lc5103913.mscx",
+  "license": "CC0-1.0",
+  "features": [
+    "grand-staff",
+    "multi-part",
+    "single-key",
+    "flat-key",
+    "time-9/8",
+    "ties",
+    "slurs",
+    "accidentals",
+    "lyrics"
+  ],
+  "pages": 2,
+  "dpi": 150,
+  "engraving": "MuseScore 4",
+  "groundTruth": "MusicXML exported from the OpenScore .mscx"
+}

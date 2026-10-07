@@ -1,0 +1,298 @@
+{
+  "generatedBy": "scripts/omr-corpus/build-corpus.ts",
+  "dpi": 150,
+  "entries": [
+    {
+      "id": "lieder-zumsteeg-geburtstag",
+      "title": "Der Geburtstag",
+      "composer": "Emilie Zumsteeg",
+      "source": "OpenScore Lieder",
+      "sourceUrl": "https://raw.githubusercontent.com/OpenScore/Lieder/38c5db510224d9facdc4b08d741fc788cfb58ea8/scores/Zumsteeg%2C_Emilie/5_Lieder/2_Der_Geburtstag/lc6158825.mscx",
+      "license": "CC0-1.0",
+      "features": [
+        "multi-part",
+        "single-key",
+        "time-4/4",
+        "tuplets",
+        "slurs",
+        "lyrics"
+      ],
+      "pages": 1
+    },
+    {
+      "id": "lieder-zumsteeg-romanze",
+      "title": "Romanze",
+      "composer": "Emilie Zumsteeg",
+      "source": "OpenScore Lieder",
+      "sourceUrl": "https://raw.githubusercontent.com/OpenScore/Lieder/38c5db510224d9facdc4b08d741fc788cfb58ea8/scores/Zumsteeg%2C_Emilie/5_Lieder/4_Romanze/lc6159273.mscx",
+      "license": "CC0-1.0",
+      "features": [
+        "multi-part",
+        "single-key",
+        "sharp-key",
+        "time-6/8",
+        "ties",
+        "slurs",
+        "accidentals",
+        "lyrics",
+        "dynamics",
+        "repeats"
+      ],
+      "pages": 1
+    },
+    {
+      "id": "lieder-schroeter-an-laura",
+      "title": "An Laura",
+      "composer": "Corona Schröter",
+      "source": "OpenScore Lieder",
+      "sourceUrl": "https://raw.githubusercontent.com/OpenScore/Lieder/38c5db510224d9facdc4b08d741fc788cfb58ea8/scores/Schr%C3%B6ter%2C_Corona/25_Lieder/03_An_Laura/lc6019054.mscx",
+      "license": "CC0-1.0",
+      "features": [
+        "grand-staff",
+        "multi-part",
+        "single-key",
+        "flat-key",
+        "time-3/4",
+        "accidentals",
+        "lyrics",
+        "dynamics"
+      ],
+      "pages": 1
+    },
+    {
+      "id": "lieder-kinkel-nachgefuehl",
+      "title": "Nachgefühl",
+      "composer": "Johanna Kinkel",
+      "source": "OpenScore Lieder",
+      "sourceUrl": "https://raw.githubusercontent.com/OpenScore/Lieder/38c5db510224d9facdc4b08d741fc788cfb58ea8/scores/Kinkel%2C_Johanna/6_Lieder%2C_Op.10/1_Nachgef%C3%BChl/lc6177220.mscx",
+      "license": "CC0-1.0",
+      "features": [
+        "grand-staff",
+        "multi-part",
+        "single-key",
+        "sharp-key",
+        "time-4/4",
+        "tuplets",
+        "slurs",
+        "accidentals",
+        "lyrics",
+        "dynamics",
+        "fermata",
+        "repeats"
+      ],
+      "pages": 1
+    },
+    {
+      "id": "lieder-satie-chanson",
+      "title": "Chanson (4 Petites mélodies)",
+      "composer": "Erik Satie",
+      "source": "OpenScore Lieder",
+      "sourceUrl": "https://raw.githubusercontent.com/OpenScore/Lieder/38c5db510224d9facdc4b08d741fc788cfb58ea8/scores/Satie%2C_Erik/4_Petites_m%C3%A9lodies/3_Chanson/lc6990810.mscx",
+      "license": "CC0-1.0",
+      "features": [
+        "grand-staff",
+        "multi-part",
+        "single-key",
+        "sharp-key",
+        "time-2/4",
+        "ties",
+        "slurs",
+        "accidentals",
+        "lyrics",
+        "dynamics",
+        "fermata"
+      ],
+      "pages": 1
+    },
+    {
+      "id": "lieder-brahms-magdalena",
+      "title": "Magdalena (Marienlieder, Op. 22)",
+      "composer": "Johannes Brahms",
+      "source": "OpenScore Lieder",
+      "sourceUrl": "https://raw.githubusercontent.com/OpenScore/Lieder/38c5db510224d9facdc4b08d741fc788cfb58ea8/scores/Brahms%2C_Johannes/Marienlieder%2C_Op.22/6_Magdalena/lc8702982.mscx",
+      "license": "CC0-1.0",
+      "features": [
+        "multi-part",
+        "single-key",
+        "flat-key",
+        "time-4/4",
+        "slurs",
+        "accidentals",
+        "lyrics",
+        "dynamics",
+        "fermata",
+        "repeats",
+        "bass-clef"
+      ],
+      "pages": 1
+    },
+    {
+      "id": "lieder-zumsteeg-kapelle",
+      "title": "Die Kapelle (Op. 4 no. 1)",
+      "composer": "Emilie Zumsteeg",
+      "source": "OpenScore Lieder",
+      "sourceUrl": "https://raw.githubusercontent.com/OpenScore/Lieder/38c5db510224d9facdc4b08d741fc788cfb58ea8/scores/Zumsteeg%2C_Emilie/6_Lieder%2C_Op.4/1_Die_Kapelle/lc6159729.mscx",
+      "license": "CC0-1.0",
+      "features": [
+        "grand-staff",
+        "multi-part",
+        "key-change",
+        "flat-key",
+        "time-6/8",
+        "time-4/4",
+        "time-change",
+        "slurs",
+        "accidentals",
+        "lyrics",
+        "dynamics",
+        "fermata",
+        "repeats"
+      ],
+      "pages": 2
+    },
+    {
+      "id": "lieder-hensel-maiabend",
+      "title": "Der Maiabend (Op. 9 no. 5)",
+      "composer": "Fanny Hensel",
+      "source": "OpenScore Lieder",
+      "sourceUrl": "https://raw.githubusercontent.com/OpenScore/Lieder/38c5db510224d9facdc4b08d741fc788cfb58ea8/scores/Hensel%2C_Fanny/6_Lieder%2C_Op.9/5_Der_Maiabend/lc5103913.mscx",
+      "license": "CC0-1.0",
+      "features": [
+        "grand-staff",
+        "multi-part",
+        "single-key",
+        "flat-key",
+        "time-9/8",
+        "ties",
+        "slurs",
+        "accidentals",
+        "lyrics"
+      ],
+      "pages": 2
+    },
+    {
+      "id": "mutopia-carcassi-op60-01",
+      "title": "Etude 1, Op. 60",
+      "composer": "Matteo Carcassi",
+      "source": "Mutopia Project",
+      "sourceUrl": "https://www.mutopiaproject.org/ftp/CarcassiM/O60/carcassi-op60-01/carcassi-op60-01.ly",
+      "license": "Public Domain",
+      "features": [
+        "single-staff",
+        "single-key",
+        "time-4/4",
+        "accidentals",
+        "lyrics"
+      ],
+      "pages": 1,
+      "instrument": "guitar"
+    },
+    {
+      "id": "mutopia-bach-menuet-g",
+      "title": "Menuet in G (Anna Magdalena Notebook)",
+      "composer": "Johann Sebastian Bach (attrib.)",
+      "source": "Mutopia Project",
+      "sourceUrl": "https://www.mutopiaproject.org/ftp/BachJS/BWVAnh114/anna-magdalena-04-guitar/anna-magdalena-04-guitar.ly",
+      "license": "Public Domain",
+      "features": [
+        "grand-staff",
+        "single-key",
+        "sharp-key",
+        "time-3/4",
+        "accidentals",
+        "lyrics"
+      ],
+      "pages": 1
+    },
+    {
+      "id": "greensleeves",
+      "title": "Greensleeves",
+      "composer": "Traditional (16th c.)",
+      "source": "TabScribe (authored; generated by scripts/omr-corpus/gen-leadsheets.mjs)",
+      "sourceUrl": null,
+      "license": "CC0-1.0",
+      "features": [
+        "single-staff",
+        "single-key",
+        "flat-key",
+        "time-3/4",
+        "ties",
+        "dotted-rhythms",
+        "chord-symbols",
+        "rehearsal-marks",
+        "dynamics",
+        "fermata",
+        "accents"
+      ],
+      "pages": 1
+    },
+    {
+      "id": "londonderry-air",
+      "title": "Londonderry Air (Danny Boy)",
+      "composer": "Traditional Irish",
+      "source": "TabScribe (authored; generated by scripts/omr-corpus/gen-leadsheets.mjs)",
+      "sourceUrl": null,
+      "license": "CC0-1.0",
+      "features": [
+        "single-staff",
+        "single-key",
+        "flat-key",
+        "time-4/4",
+        "ties",
+        "dotted-rhythms",
+        "chord-symbols",
+        "multi-measure-rest",
+        "rhythm-slashes",
+        "rehearsal-marks",
+        "dynamics",
+        "fermata"
+      ],
+      "pages": 1
+    },
+    {
+      "id": "st-louis-blues",
+      "title": "St. Louis Blues",
+      "composer": "W. C. Handy (1914)",
+      "source": "TabScribe (authored; generated by scripts/omr-corpus/gen-leadsheets.mjs)",
+      "sourceUrl": null,
+      "license": "CC0-1.0",
+      "features": [
+        "single-staff",
+        "key-change",
+        "flat-key",
+        "time-4/4",
+        "time-2/4",
+        "time-change",
+        "dotted-rhythms",
+        "chord-symbols",
+        "rehearsal-marks",
+        "dynamics",
+        "fermata",
+        "accents"
+      ],
+      "pages": 1
+    },
+    {
+      "id": "after-youve-gone",
+      "title": "After You've Gone",
+      "composer": "Creamer & Layton (1918)",
+      "source": "TabScribe (authored; generated by scripts/omr-corpus/gen-leadsheets.mjs)",
+      "sourceUrl": null,
+      "license": "CC0-1.0",
+      "features": [
+        "single-staff",
+        "single-key",
+        "flat-key",
+        "time-4/4",
+        "dotted-rhythms",
+        "chord-symbols",
+        "rhythm-slashes",
+        "rehearsal-marks",
+        "dynamics",
+        "fermata",
+        "accents"
+      ],
+      "pages": 1
+    }
+  ]
+}

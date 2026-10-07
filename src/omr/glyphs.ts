@@ -94,6 +94,10 @@ interface HoleCand {
   fill?: { x0: number; y0: number; x1: number; y1: number };
   /** row used for horizontal rays */
   rowH: number;
+  /** column / row of the rays for a half-hole pair without horizontal overlap: the centre of the larger half */
+  cxH?: number;
+  /** centre rows of both half-holes of a pair (the row of the smaller half is tried too) */
+  rowsAlt?: number[];
 }
 
 /**
@@ -123,7 +127,9 @@ export function findHollowHeads(img: GImg, d: number, t: number, lineYAt: (x: nu
       const ox1 = Math.min(a.x1, b.x1);
       const ov = ox1 - ox0 + 1;
       const minW = Math.min(a.x1 - a.x0 + 1, b.x1 - b.x0 + 1);
-      if (ov < 0.3 * minW) continue;
+      // the tilted ring leaves its upper half-hole up-right and the lower one down-left of the line, so the two may be
+      // diagonal neighbours with no horizontal overlap: accept up to 0.3 d of horizontal gap
+      if (ov < 0.3 * minW && ov < -0.3 * d) continue;
       const gy = (a.y1 + b.y0) / 2;
       const cx = (ox0 + ox1) / 2;
       let onLine = false;
@@ -140,6 +146,8 @@ export function findHollowHeads(img: GImg, d: number, t: number, lineYAt: (x: nu
         area: a.area + b.area + gap * ov,
         fill: { x0: ox0, x1: ox1, y0: a.y1 + 1, y1: b.y0 - 1 },
         rowH: Math.round(biggerA ? (a.y0 + a.y1) / 2 : (b.y0 + b.y1) / 2),
+        rowsAlt: [Math.round((a.y0 + a.y1) / 2), Math.round((b.y0 + b.y1) / 2)],
+        cxH: ov < 0.3 * minW ? Math.round(biggerA ? (a.x0 + a.x1) / 2 : (b.x0 + b.x1) / 2) : undefined,
       });
       merged.add(a.id);
       merged.add(b.id);
@@ -175,7 +183,9 @@ export function findHollowHeads(img: GImg, d: number, t: number, lineYAt: (x: nu
     const bh = hc.y1 - hc.y0 + 1;
     if (bw < 0.3 * d || bh < 0.28 * d){ rej('r1', hc); continue; }
     const fillRatio = hc.area / (bw * bh);
-    if (fillRatio < 0.45){ rej('r2', hc); continue; }
+    // a pair of half-holes split by a staff line: the ring is tilted, so the halves sit diagonally and their union box is
+    // mostly ring (a single hole fills ~0.5+ of its box)
+    if (fillRatio < (hc.fill ? 0.3 : 0.45)){ rej('r2', hc); continue; }
     // ellipse-like: at least 3 of the 4 bbox corners must not belong to the hole
     let cornersOut = 0;
     for (const [px, py] of [
@@ -187,11 +197,11 @@ export function findHollowHeads(img: GImg, d: number, t: number, lineYAt: (x: nu
       const l = lab[py * w + px];
       if (!hc.ids.includes(l)) cornersOut++;
     }
-    if (cornersOut < 3 && !hc.fill){ rej('r3', hc); continue; }
-    const cx = Math.round((hc.x0 + hc.x1) / 2);
-    const cy = Math.round((hc.y0 + hc.y1) / 2);
+    if (cornersOut < 2 && !hc.fill){ rej('r3', hc); continue; }
+    const cx = hc.cxH ?? Math.round((hc.x0 + hc.x1) / 2);
+    const cy = hc.cxH !== undefined ? hc.rowH : Math.round((hc.y0 + hc.y1) / 2);
     // horizontal / vertical rays: try a few rows / columns (the staff line may run through the hole's centre row)
-    const rowsTry = hc.fill ? [hc.rowH] : [cy, cy - Math.round(bh / 4), cy + Math.round(bh / 4), cy - 1, cy + 1];
+    const rowsTry = hc.fill ? [hc.rowH, ...(hc.rowsAlt ?? [])] : [cy, cy - Math.round(bh / 4), cy + Math.round(bh / 4), cy - 1, cy + 1];
     let L = ray(hc, cx, cy, -1, 0);
     let R = ray(hc, cx, cy, 1, 0);
     for (const r of rowsTry) {
@@ -224,6 +234,8 @@ export function findHollowHeads(img: GImg, d: number, t: number, lineYAt: (x: nu
     const outerW = L.s0 + L.th + R.s0 + R.th;
     const outerH = U.s0 + U.th + D.s0 + D.th;
     if (outerW < 0.95 * d || outerW > 2.0 * d || outerH < 0.7 * d || outerH > 1.6 * d){ rej('r9', hc); continue; }
+    // a pair of half-holes that is much wider than a head is two neighbouring glyphs (flat bulbs, a head and a stem hole)
+    if (hc.fill && outerW > 1.75 * d){ rej('r9b', hc); continue; }
     if (outerW < 0.8 * outerH){ rej('r10', hc); continue; } // heads are wider than tall
     // flat sign look-alike: a long stroke rising from the left edge
     {
@@ -360,6 +372,8 @@ export function readKeySignature(img: GImg, d: number, topL: number, botL: numbe
   type G = { kind: 'flat' | 'sharp'; x0: number; x1: number; s: Stroke };
   const glyphs: G[] = [];
   let prevEnd = startX;
+  // a flat's bulb often sits 2-3 px off its stem after binarisation: bridge gaps up to ~0.25 d
+  const maxGap = Math.max(1, Math.round(0.25 * d));
   const rightEdge = (g: G): number => {
     let endX = g.x1;
     const lim = Math.min(img.w - 1, Math.round(g.x1 + 1.2 * d));
@@ -370,7 +384,7 @@ export function readKeySignature(img: GImg, d: number, topL: number, botL: numbe
       if (any) {
         endX = x;
         gap = 0;
-      } else if (++gap > 1) break;
+      } else if (++gap > maxGap) break;
     }
     return endX;
   };

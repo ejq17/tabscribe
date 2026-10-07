@@ -46,7 +46,12 @@ export interface Cluster {
   advance: number;
 }
 
-/** Group noteheads that sound together: shared stem or x centres within 0.6 staff spaces. */
+/**
+ * Group noteheads that sound together: shared stem, x centres within 0.6 staff spaces, or heads that would physically
+ * overlap otherwise (|dx| <= 1.3 d and |dy| <= 1.05 d: a displaced second, or a column whose heads were split by an
+ * adjacent arpeggio / roll squiggle that was read as a stem). Duplicate heads at one staff position inside a chord
+ * collapse to one, and chord heads that differ only by a missed augmentation dot take the longest duration.
+ */
 export function clusterHeads(heads: Notehead[], stems: StemInfo[], d: number, ppq: number): Cluster[] {
   const sorted = [...heads].sort((a, b) => a.cx - b.cx);
   const parent = sorted.map((_, i) => i);
@@ -59,7 +64,8 @@ export function clusterHeads(heads: Notehead[], stems: StemInfo[], d: number, pp
       if (sorted[j].cx - sorted[i].cx > 2.2 * d) break;
       const sameStem = sorted[i].stemId >= 0 && sorted[i].stemId === sorted[j].stemId;
       const sameX = Math.abs(sorted[i].cx - sorted[j].cx) <= 0.6 * d;
-      if (sameStem || sameX) union(i, j);
+      const overlap = Math.abs(sorted[i].cx - sorted[j].cx) <= 1.3 * d && Math.abs(sorted[i].cy - sorted[j].cy) <= 1.05 * d;
+      if (sameStem || sameX || overlap) union(i, j);
     }
   }
   const groups = new Map<number, Notehead[]>();
@@ -68,8 +74,30 @@ export function clusterHeads(heads: Notehead[], stems: StemInfo[], d: number, pp
     (groups.get(r) ?? groups.set(r, []).get(r)!).push(h);
   });
   const out: Cluster[] = [];
-  for (const hs of groups.values()) {
-    const durations = hs.map((h) => headTicks(h, h.stemId >= 0 ? stems[h.stemId] : undefined, ppq));
+  for (const hs0 of groups.values()) {
+    // one head per staff position: drop duplicates (keep the most confident; ties keep the one with a dot)
+    const byY = [...hs0].sort((a, b) => a.cy - b.cy);
+    const kept: Notehead[] = [];
+    for (const h of byY) {
+      const dup = kept.findIndex((k) => Math.abs(k.cy - h.cy) < 0.4 * d);
+      if (dup < 0) kept.push(h);
+      else if (h.confidence > kept[dup].confidence || (h.confidence === kept[dup].confidence && h.dots > kept[dup].dots)) kept[dup] = h;
+    }
+    const hs = kept.length > 0 ? kept : hs0;
+    let durations = hs.map((h) => headTicks(h, h.stemId >= 0 ? stems[h.stemId] : undefined, ppq));
+    if (hs.length > 1) {
+      // same head type, differing only by dots: the dot is the part that is easily missed
+      const factor = (n: number) => (n === 0 ? 1 : n === 1 ? 1.5 : 1.75);
+      const undotted = hs.map((h, i) => durations[i] / factor(h.dots));
+      const base = undotted[0];
+      if (undotted.every((u) => Math.abs(u - base) < 1)) {
+        // a second dot is only believed when two heads agree on it (a lone one is a dot of the next sign)
+        const twos = hs.filter((h) => h.dots >= 2).length;
+        const dots = Math.max(...hs.map((h) => (h.dots >= 2 && twos < 2 ? 1 : h.dots)));
+        const v = Math.round(base * factor(dots));
+        durations = durations.map(() => v);
+      }
+    }
     out.push({
       heads: hs,
       x: hs.reduce((s, h) => s + h.cx, 0) / hs.length,
@@ -101,15 +129,43 @@ export function quantizeTicks(v: number, grid: number): number {
   return Math.max(grid, Math.round(v / grid) * grid);
 }
 
+/** A key / time-signature change found on a staff; it applies from output measure index `measure` (== length when trailing). */
+export interface SigChange {
+  measure: number;
+  timeSig?: { numerator: number; denominator: number };
+  keyFifths?: number;
+}
+
+export interface StaffLayoutResult {
+  measures: RhythmEvent[][];
+  /** per output measure: the bar holds chord-slash notation (>= 2 slashes, no notes) */
+  slash: boolean[];
+  /** signature changes after a double barline (mid-staff or trailing courtesy) */
+  changes: SigChange[];
+  /** a trailing cell that held only signature junk was dropped (it is not a measure) */
+  trailingCourtesy: boolean;
+}
+
+export function staffMeasures(sym: StaffSymbols, stems: StemInfo[], d: number, ppq: number): RhythmEvent[][] {
+  return staffLayout(sym, stems, d, ppq).measures;
+}
+
 /**
  * Split a staff's symbols into measures (by barline x positions) of rhythm events.
- * Multi-measure rests expand to N empty measures; measures made only of chord slashes are emitted empty.
+ * Multi-measure rests expand to N empty measures; measures made only of chord slashes are emitted empty (and flagged).
+ * A key / time signature after the LAST barline (courtesy signature at the end of the staff) is not a measure: its
+ * cell is dropped and the change is reported with `measure === measures.length` so the caller carries it to the next
+ * system. Changes after a mid-staff double barline are reported with the index of the measure they apply from.
  */
-export function staffMeasures(sym: StaffSymbols, stems: StemInfo[], d: number, ppq: number): RhythmEvent[][] {
+export function staffLayout(sym: StaffSymbols, stems: StemInfo[], d: number, ppq: number): StaffLayoutResult {
   const all: RhythmEvent[] = [];
+  const sigs = sym.signatureChanges ?? [];
+  const inSig = (x: number) => sigs.some((c) => x >= c.x0 - 0.5 * d && x <= c.x1 + 0.5 * d);
   for (const c of clusterHeads(sym.heads, stems, d, ppq)) all.push({ kind: 'cluster', x: c.x, cluster: c });
   for (const r of sym.rests) all.push({ kind: 'rest', x: (r.x0 + r.x1) / 2, rest: r });
   all.sort((a, b) => a.x - b.x);
+  // rest-like fragments left by key / time signature glyphs are not rhythm
+  for (let i = all.length - 1; i >= 0; i--) if (all[i].kind === 'rest' && inSig(all[i].x)) all.splice(i, 1);
   // events under a triplet bracket / digit sound 3 in the time of 2
   for (const tp of sym.tuplets ?? []) {
     if (tp.n !== 3) continue;
@@ -131,17 +187,50 @@ export function staffMeasures(sym: StaffSymbols, stems: StemInfo[], d: number, p
   const right = sym.staffRight ?? Infinity;
   const closed = nb > 0 && sym.barlines[nb - 1] >= right - 2.5 * d;
   let n = slots.length;
+  let trailingCourtesy = false;
   if (closed || slots[n - 1].length === 0) n--;
-  const out: RhythmEvent[][] = [];
-  for (let k = 0; k < n; k++) {
-    let ev = slots[k];
-    if (slashCount[k] >= 2 && !ev.some((e) => e.kind === 'cluster')) ev = [];
-    const reps = multi.get(k);
-    if (reps && reps > 1 && ev.length === 0) {
-      for (let r = 0; r < reps; r++) out.push([]);
-    } else out.push(ev);
+  else if (nb > 0 && !slots[n - 1].some((e) => e.kind === 'cluster')) {
+    // an unterminated last cell with no notes: a courtesy signature (declared, or narrow compared with a real bar)
+    const declared = sigs.some((c) => c.barline >= nb - 1);
+    const widths: number[] = [];
+    for (let i = 1; i < nb; i++) widths.push(sym.barlines[i] - sym.barlines[i - 1]);
+    widths.sort((a, b) => a - b);
+    const median = widths.length > 0 ? widths[Math.floor(widths.length / 2)] : 0;
+    const w = right - sym.barlines[nb - 1];
+    if (declared || (Number.isFinite(w) && w <= Math.max(9 * d, 0.55 * median))) {
+      n--;
+      trailingCourtesy = true;
+    }
   }
-  return out;
+  const out: RhythmEvent[][] = [];
+  const slash: boolean[] = [];
+  const outStart: number[] = [];
+  for (let k = 0; k < n; k++) {
+    outStart[k] = out.length;
+    let ev = slots[k];
+    let isSlash = false;
+    if (slashCount[k] >= 2 && !ev.some((e) => e.kind === 'cluster')) {
+      ev = [];
+      isSlash = true;
+    }
+    const reps = multi.get(k);
+    if (reps && reps > 1 && ev.length === 0 && !isSlash) {
+      for (let r = 0; r < reps; r++) {
+        out.push([]);
+        slash.push(false);
+      }
+    } else {
+      out.push(ev);
+      slash.push(isSlash);
+    }
+  }
+  const changes: SigChange[] = [];
+  for (const c of sigs) {
+    if (!c.timeSig && c.keyFifths === undefined) continue;
+    const m = outStart[c.barline + 1] ?? out.length;
+    changes.push({ measure: m, timeSig: c.timeSig, keyFifths: c.keyFifths });
+  }
+  return { measures: out, slash, changes, trailingCourtesy };
 }
 
 export interface Layout {
@@ -156,13 +245,79 @@ export interface Layout {
   tuplet: boolean;
   /** a single low-confidence event was halved / doubled / dotted so the bar adds up (instead of rescaling everything) */
   repaired?: string;
+  /** durations were snapped to the nearest standard-duration set that fills the bar (never fractional values) */
+  snapped?: boolean;
+  /** the bar is shorter than the time signature and was left as read (implied trailing rest), nothing was stretched */
+  underfull?: boolean;
+}
+
+/** Standard written durations in 16th-note units: 16th .. dotted whole, with single / double dots. */
+const STD_UNITS = [1, 2, 3, 4, 6, 7, 8, 12, 14, 16, 24];
+
+/** Nearest standard duration (ticks) to `v`. */
+export function snapStandardTicks(v: number, ppq: number): number {
+  const g = ppq / 4;
+  let best = STD_UNITS[0];
+  for (const u of STD_UNITS) if (Math.abs(Math.log(u * g / Math.max(1, v))) < Math.abs(Math.log(best * g / Math.max(1, v)))) best = u;
+  return best * g;
+}
+
+/** Sum of the written durations of a bar's events (triplet events at 2/3), as used for meter inference. */
+export function rawMeasureTotal(events: RhythmEvent[], ppq: number, nominal: number): number {
+  let ev = events;
+  if (ev.length > 1 && ev.some((e) => e.kind === 'rest' && e.rest.kind === 'whole')) ev = ev.filter((e) => !(e.kind === 'rest' && e.rest.kind === 'whole'));
+  let t = 0;
+  for (const e of ev) {
+    const v = e.kind === 'cluster' ? e.cluster.advance : restTicks(e.rest, ppq, nominal);
+    t += e.tuplet === 3 ? Math.round((v * 2) / 3) : v;
+  }
+  return t;
+}
+
+/**
+ * Choose one standard duration (16th units) per event so they sum to `target`, minimising the log-ratio change
+ * weighted by event reliability (low-confidence events change first). Each event may change by at most a factor of 2.
+ * Returns null when no such assignment exists.
+ */
+function snapToBar(units: number[], weights: number[], target: number): number[] | null {
+  const n = units.length;
+  if (n === 0 || target <= 0) return null;
+  const INF = 1e18;
+  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array(target + 1).fill(INF));
+  const pick: number[][] = Array.from({ length: n + 1 }, () => new Array(target + 1).fill(0));
+  dp[0][0] = 0;
+  for (let i = 0; i < n; i++) {
+    for (let t = 0; t <= target; t++) {
+      if (dp[i][t] >= INF) continue;
+      for (const c of STD_UNITS) {
+        if (t + c > target) break;
+        const ratio = c / Math.max(0.5, units[i]);
+        if (ratio > 2.05 || ratio < 0.48) continue;
+        const cost = dp[i][t] + weights[i] * Math.abs(Math.log(ratio));
+        if (cost < dp[i + 1][t + c]) {
+          dp[i + 1][t + c] = cost;
+          pick[i + 1][t + c] = c;
+        }
+      }
+    }
+  }
+  if (dp[n][target] >= INF) return null;
+  const res = new Array<number>(n);
+  let t = target;
+  for (let i = n; i >= 1; i--) {
+    res[i - 1] = pick[i][t];
+    t -= pick[i][t];
+  }
+  return res;
 }
 
 /**
  * Lay out events from the measure start. Standard durations are used when they fill the measure. Otherwise a
- * triplet group is searched; otherwise durations are rescaled proportionally when the factor lies in [0.5, 2.0]
- * (unless `allowUnderfull` and the measure is merely short, e.g. a pickup or final bar). Every onset and duration is
- * quantized to the 16th grid (120 ticks at ppq 480; 80 for triplet groups), so no odd values like 530 or 66 appear.
+ * triplet group is searched, then a single low-confidence event that can be halved / doubled / dotted. A bar that is
+ * still too long is snapped to the nearest set of standard durations (16th .. dotted whole) that fills it; a bar
+ * that is too short is left as read (implied trailing rest) unless `allowUnderfull` (pickup / final bar). Durations
+ * are never stretched proportionally, so values like 1.25 beats cannot appear. Every onset and duration is on the
+ * 16th grid (120 ticks at ppq 480; 80 for triplet groups).
  */
 export function layoutMeasure(events0: RhythmEvent[], nominal: number, ppq: number, allowUnderfull: boolean): Layout {
   // a whole-measure rest next to real events is a misdetection: ignore it
@@ -232,44 +387,33 @@ export function layoutMeasure(events0: RhythmEvent[], nominal: number, ppq: numb
       repaired = `event ${c.i + 1} ${c.name}`;
     }
   }
-  let scale = 1;
-  let scaled = false;
+  const scale = 1;
+  const scaled = false;
   let clipped = false;
+  let snapped = false;
+  let underfull = false;
   const mismatchLeft = !restOnly && total > 0 && Math.abs(total - nominal) > 1 && !impliedRests;
   const mismatch = mismatch0 || mismatchLeft;
   if (mismatchLeft) {
-    const ratio = nominal / total;
-    if (total < nominal && allowUnderfull) {
-      // keep as is (pickup bar / final bar)
-    } else if (ratio >= 0.5 && ratio <= 2.0) {
-      scale = ratio;
-      scaled = true;
-    } else clipped = true;
+    if (total < nominal) {
+      // a short bar (pickup / final bar, or events missed): keep the durations as read, never stretch them
+      if (!allowUnderfull) underfull = true;
+    } else {
+      // too long: snap the durations to the nearest standard set that fills the bar
+      const g = g16;
+      const fixed = events.reduce((sum, e, i) => sum + (e.tuplet === 3 ? tgt[i] : 0), 0);
+      const free = events.map((_, i) => i).filter((i) => events[i].tuplet !== 3);
+      const target = (nominal - fixed) / g;
+      const conf = events.map((e) => (e.kind === 'cluster' ? Math.min(...e.cluster.heads.map((h) => h.confidence)) : 0.9));
+      const sol = Number.isInteger(target) ? snapToBar(free.map((i) => tgt[i] / g), free.map((i) => 0.2 + conf[i]), target) : null;
+      if (sol) {
+        free.forEach((i, k) => (tgt[i] = sol[k] * g));
+        snapped = true;
+      } else clipped = true;
+    }
   }
   const real = tgt.map((v) => v * scale);
   const q = real.map((v, i) => quantizeTicks(v, grids[i]));
-  if (scaled) {
-    // distribute the rounding residue so the bar still adds up
-    let diff = nominal - q.reduce((s, v) => s + v, 0);
-    let guard = 64;
-    while (diff !== 0 && guard-- > 0) {
-      const sign = diff > 0 ? 1 : -1;
-      let best = -1;
-      let bestCost = Infinity;
-      for (let i = 0; i < q.length; i++) {
-        const nv = q[i] + sign * grids[i];
-        if (nv < grids[i] || Math.abs(diff) < grids[i]) continue;
-        const cost = Math.abs(nv - real[i]) - Math.abs(q[i] - real[i]);
-        if (cost < bestCost) {
-          bestCost = cost;
-          best = i;
-        }
-      }
-      if (best < 0) break;
-      q[best] += sign * grids[best];
-      diff -= sign * grids[best];
-    }
-  }
   const placed: PlacedEvent[] = [];
   let cursor = 0;
   events.forEach((e, i) => {
@@ -291,5 +435,5 @@ export function layoutMeasure(events0: RhythmEvent[], nominal: number, ppq: numb
     });
     cursor += q[i];
   });
-  return { placed, total, scaled, mismatch, clipped, tuplet: tuplet || explicitTuplet, repaired };
+  return { placed, total, scaled, mismatch, clipped, tuplet: tuplet || explicitTuplet, repaired, snapped, underfull };
 }
