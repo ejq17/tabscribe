@@ -57,6 +57,30 @@ describe('detectChords', () => {
   });
 });
 
+describe('detectChords noise rejection', () => {
+  const note = (pitch: number, start: number, duration: number) => ({ id: newNoteId(), pitch, start, duration, velocity: 90, voice: 0 });
+  it('ignores a stepwise scale, then finds block chords', () => {
+    const s = createEmptyScore();
+    const notes = [60, 62, 64, 65, 67, 69, 71, 72].map((p, i) => note(p, i * PPQ, PPQ));
+    [[60, 64, 67], [57, 60, 64], [53, 57, 60], [55, 59, 62]].forEach((c, i) => {
+      for (const p of c) notes.push(note(p, (2 + i) * PPQ * 4, PPQ * 4));
+    });
+    s.tracks.push({ id: 't', name: 'x', program: 0, notes });
+    expect(names(s, 'half')).toEqual(['C', 'Am', 'F', 'G']);
+    expect(names(s, 'beat')).toEqual(['C', 'Am', 'F', 'G']);
+  });
+  it('recognises an arpeggiated triad', () => {
+    const s = createEmptyScore();
+    s.tracks.push({ id: 't', name: 'x', program: 0, notes: [60, 64, 67, 72].map((p, i) => note(p, i * PPQ / 2, PPQ / 2)) });
+    expect(names(s, 'measure')).toEqual(['C']);
+  });
+  it('does not slash a low bass that is the root, or a close bass', () => {
+    const s = createEmptyScore();
+    s.tracks.push({ id: 't', name: 'x', program: 0, notes: [note(36, 0, PPQ * 4), note(64, 0, PPQ * 2), note(67, 0, PPQ * 2), note(72, 0, PPQ * 2)] });
+    expect(names(s, 'measure')).toEqual(['C']);
+  });
+});
+
 /** frets high->low index; helper converts to the low->high string notation for readability */
 describe('chordDiagram', () => {
   it('classic open shapes', () => {

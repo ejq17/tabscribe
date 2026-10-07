@@ -56,8 +56,9 @@ export async function startPlayback(fromTick?: number): Promise<void> {
 }
 
 export function pausePlayback(): void {
-  player?.stop();
-  useStore.getState().setPlayback({ isPlaying: false });
+  const tick = useStore.getState().playback.tick;
+  player?.pause();
+  useStore.getState().setPlayback({ isPlaying: false, tick });
 }
 
 export function stopPlayback(): void {

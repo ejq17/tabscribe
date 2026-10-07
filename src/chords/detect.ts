@@ -32,7 +32,7 @@ export const CHORD_TEMPLATES: Record<string, number[]> = {
   '5': [0, 7],
 };
 
-interface Window { start: number; end: number; hist: number[]; bass: number | null; bassWeight: number; pitches: Set<number>; }
+interface Window { start: number; end: number; hist: number[]; bass: number | null; bassWeight: number; pitches: Set<number>; ivs: [number, number][]; pw: Map<number, number>; }
 interface Cand { root: number; quality: string; score: number; }
 
 function windowsOf(score: Score, resolution: 'beat' | 'measure' | 'half'): Window[] {
@@ -44,7 +44,7 @@ function windowsOf(score: Score, resolution: 'beat' | 'measure' | 'half'): Windo
     else if (resolution === 'half') step = len / 2;
     if (step <= 0) step = len;
     for (let t = m.startTick; t < m.endTick - 1e-6; t += step) {
-      out.push({ start: t, end: Math.min(t + step, m.endTick), hist: new Array(12).fill(0), bass: null, bassWeight: 0, pitches: new Set() });
+      out.push({ start: t, end: Math.min(t + step, m.endTick), hist: new Array(12).fill(0), bass: null, bassWeight: 0, pitches: new Set(), ivs: [], pw: new Map() });
     }
   }
   return out;
@@ -68,6 +68,8 @@ function fillWindows(score: Score, wins: Window[]): void {
         if (ov <= 0) continue;
         w.hist[pitchClass(n.pitch)] += ov;
         w.pitches.add(n.pitch);
+        w.ivs.push([Math.max(n.start, w.start), Math.min(nEnd, w.end)]);
+        w.pw.set(n.pitch, (w.pw.get(n.pitch) ?? 0) + ov);
         // bass: lowest pitch with meaningful overlap
         if (ov >= (w.end - w.start) * 0.2 || ov >= 1) {
           if (w.bass === null || n.pitch < w.bass) { w.bass = n.pitch; w.bassWeight = ov; }
@@ -75,6 +77,38 @@ function fillWindows(score: Score, wins: Window[]): void {
       }
     }
   }
+}
+
+/** Characteristic (colour) interval of qualities that need real support from the notes. */
+const CHARACTERISTIC: Record<string, number> = { sus2: 2, sus4: 5, add9: 2, '6': 9, m6: 9, '9': 2, m9: 2 };
+const SIMPLE_EXT = new Set(['maj7', 'm7', '7', 'm7b5', 'dim7', 'sus2', 'sus4', 'add9', '6', 'm6', '9', 'm9']);
+
+/** Total time during which 2+ notes sound at once. */
+function overlapTime(ivs: [number, number][]): number {
+  const ev: [number, number][] = [];
+  for (const [a, b] of ivs) { ev.push([a, 1]); ev.push([b, -1]); }
+  ev.sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+  let c = 0, last = 0, tot = 0;
+  for (const [t, d] of ev) {
+    if (c >= 2) tot += t - last;
+    c += d; last = t;
+  }
+  return tot;
+}
+
+/** Concentrated-mass evidence for a window without simultaneous notes. */
+function concentrated(hist: number[], root: number, quality: string): boolean {
+  const ivs = CHORD_TEMPLATES[quality];
+  let match = 0, non = 0, present = 0;
+  for (let pc = 0; pc < 12; pc++) {
+    const inT = ivs.some((i) => (root + i) % 12 === pc);
+    if (inT) { match += hist[pc]; if (hist[pc] > 0.02) present++; } else non += hist[pc];
+  }
+  if (match < 0.75 || non > 0.25 || present < 3) return false;
+  const has = (iv: number) => hist[(root + iv) % 12] > 0.02;
+  const third = ivs.some((i) => (i === 3 || i === 4 || (quality === 'sus2' && i === 2) || (quality === 'sus4' && i === 5)) && has(i));
+  const fifth = ivs.some((i) => (i === 6 || i === 7 || i === 8) && has(i));
+  return has(0) && third && fifth;
 }
 
 /** Score every (root, quality) against a normalised histogram (sum = 1). */
@@ -95,6 +129,8 @@ function scoreCandidates(hist: number[], bassPc: number | null): Cand[] {
         else if (quality === 'sus2' || quality === 'sus4' || iv === 3 || iv === 4) s -= 0.3;
         else s -= 0.35; // 6th/7th/9th extension absent
       }
+      const ch = CHARACTERISTIC[quality];
+      if (ch !== undefined && hist[(root + ch) % 12] < 0.6 * hist[root]) s -= 0.3;
       s -= 0.01 * ivs.length;
       if (bassPc !== null) {
         if (bassPc === root) s += 0.15;
@@ -133,13 +169,26 @@ export function detectChords(score: Score, opts?: { resolution?: 'beat' | 'measu
     let best = cands[0];
     for (const c of cands) if (c.score > best.score) best = c;
     if (best.score < 0.35) { prev = null; continue; }
+    if (SIMPLE_EXT.has(best.quality)) {
+      let tri: Cand | null = null;
+      for (const c of cands) if ((c.quality === '' || c.quality === 'm') && (!tri || c.score > tri.score)) tri = c;
+      if (tri && tri.score >= best.score - 0.15 * Math.abs(best.score)) best = tri;
+    }
     if (prev && !(prev.root === best.root && prev.quality === best.quality)) {
       const pc = cands.find((c) => c.root === prev!.root && c.quality === prev!.quality);
       if (pc && pc.score >= best.score - 0.1 * Math.abs(best.score)) best = pc;
     }
+    const simultaneous = overlapTime(w.ivs) >= wlen * 0.1;
+    if (!simultaneous && !concentrated(hist, best.root, best.quality)) { prev = null; continue; }
     prev = { root: best.root, quality: best.quality };
+    // slash bass: sounds >= 50% of the window and >= 3 semitones below everything else
+    let slashPc: number | null = null;
+    if (w.bass !== null && (w.pw.get(w.bass) ?? 0) >= wlen * 0.5) {
+      const others = [...w.pitches].filter((p) => p !== w.bass);
+      if (others.every((p) => p - w.bass! >= 3)) slashPc = bassPc;
+    }
     const flats = keySignatureAt(score, w.start).fifths < 0;
-    const name = chordName(best.root, best.quality, bassPc, flats);
+    const name = chordName(best.root, best.quality, slashPc, flats);
     const hasSlash = name.includes('/');
     const last = events[events.length - 1];
     const pitches = [...w.pitches].sort((a, b) => a - b);
@@ -147,7 +196,7 @@ export function detectChords(score: Score, opts?: { resolution?: 'beat' | 'measu
       last.duration += wlen;
       last.pitches = [...new Set([...last.pitches, ...pitches])].sort((a, b) => a - b);
     } else {
-      events.push({ tick: w.start, duration: wlen, name, root: best.root, quality: best.quality, bass: hasSlash && bassPc !== null ? bassPc : undefined, pitches });
+      events.push({ tick: w.start, duration: wlen, name, root: best.root, quality: best.quality, bass: hasSlash && slashPc !== null ? slashPc : undefined, pitches });
     }
   }
   return events;
