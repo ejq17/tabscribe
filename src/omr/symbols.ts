@@ -1,5 +1,6 @@
 import type { AccidentalKind, Binary, ClefKind, Notehead, RestKind, RestSym, Staff, StaffSymbols, StemInfo } from './types';
 import { lineY, removeStaffLines } from './staves';
+import { findHollowHeads, findMultiRestBars, findStrokes, readKeySignature, type GImg } from './glyphs';
 
 /** Local crop of the page with its page-coordinate origin. */
 interface Img {
@@ -431,6 +432,22 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
   const ink = (x: number, y: number): boolean => x >= 0 && y >= 0 && x < W && y < H && clean.d[y * W + x] === 1;
   void src;
 
+  // notehead-sized solid blobs (opened mask) used to tell stems from barlines
+  const preHeads: Comp[] = [];
+  {
+    const h0 = runLengths(clean.w, clean.h, clean.d, false);
+    const v0 = runLengths(clean.w, clean.h, clean.d, true);
+    const hm = Math.max(2, Math.round(0.5 * d));
+    const vm = Math.max(2, Math.round(0.7 * d));
+    const m0 = new Uint8Array(clean.w * clean.h);
+    for (let i = 0; i < m0.length; i++) m0[i] = clean.d[i] && h0[i] >= hm && v0[i] >= vm ? 1 : 0;
+    for (const c of labelComponents(clean.w, clean.h, m0).comps) {
+      const w0 = c.x1 - c.x0 + 1;
+      const hh0 = c.y1 - c.y0 + 1;
+      if (c.area >= 0.4 * d * d && w0 >= 0.8 * d && hh0 >= 0.6 * d && w0 <= 1.8 * d) preHeads.push(c);
+    }
+  }
+
   // ---- barlines: columns that are inked over the whole staff height (and are not a stem), erased before labelling
   const barLocal: number[] = [];
   {
@@ -469,6 +486,35 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
       const topFill = boxFill(s - hw, e + hw, yA - hv, yA + hv, s - 1, e + 1);
       const botFill = boxFill(s - hw, e + hw, yB - hv, yB + hv, s - 1, e + 1);
       if (topFill >= 0.35 || botFill >= 0.35) continue; // a stem with its notehead
+      // a barline ends at the outer staff lines (or runs on to the neighbouring staff); a stem sticks out into free space
+      {
+        const xm = Math.min(W - 1, Math.max(0, Math.floor((s + e) / 2)));
+        const run = (y0: number, dy: number): number => {
+          let n = 0;
+          let miss = 0;
+          for (let y = y0; y >= 0 && y < H; y += dy) {
+            if (clean.d[y * W + xm]) {
+              n++;
+              miss = 0;
+            } else if (++miss > 1) break;
+          }
+          return n;
+        };
+        // a stem is touched by a notehead-sized solid blob; a barline is not
+        let touched = false;
+        for (const m of preHeads) {
+          if (m.x0 <= e + 2 && m.x1 >= s - 2 && m.y1 >= yA - 1.3 * d && m.y0 <= yB + 1.3 * d) {
+            touched = true;
+            break;
+          }
+        }
+        if (touched) continue;
+        const up = run(yA - 1, -1);
+        const down = run(yB + 1, 1);
+        const atLeft = (s + e) / 2 <= staff.left - rx0 + 1.0 * d;
+        if (!atLeft && up > 0.55 * d && yA - up > 1) continue;
+        if (!atLeft && down > 0.55 * d && yB + down < H - 2) continue;
+      }
       barLocal.push((s + e + 1) / 2);
       for (let y = Math.max(0, yA - 2); y <= Math.min(H - 1, yB + 2); y++) {
         // keep thin horizontal strokes (ties/slurs/beams) that cross the bar: ink on both sides within +-1 row
@@ -530,9 +576,259 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
   const clefIds = zone ? zone.ids : new Set<number>();
   const isClefCand = (c: Comp): boolean => clefIds.has(c.id);
 
-  // ---- opened mask for filled noteheads
+
+  // ---- run lengths (opened masks, slash cores)
   const hrun = runLengths(W, H, clean.d, false);
   const vrun = runLengths(W, H, clean.d, true);
+
+  // ---- clef
+  let clef: ClefKind = staff.lowerOfGrand ? 'bass' : opts.defaultClef;
+  let clefDetected = false;
+  let clefMissing = false;
+  let clefEnd = lx(staff.left);
+  const used = new Set<number>();
+  if (zone) {
+    const zh = zone.y1 - zone.y0 + 1;
+    const spans = zone.y0 < topL - 0.5 * d && zone.y1 > botL + 0.5 * d;
+    // a treble clef has one long vertical axis; a cluster of overlapping flats does not
+    const clefStroke = findStrokes({ w: W, h: H, d: src.d }, zone.x0, zone.x1 + 1, Math.round(zone.y0), Math.round(zone.y1), Math.round(4.0 * d), Math.max(4, Math.round(0.9 * d)));
+    if ((zh >= 5 * d || spans) && clefStroke.some((k) => k.x0 > staff.left - rx0 + 0.8 * d)) {
+      for (const id of zone.ids) used.add(id);
+      clefEnd = zone.x1;
+      clef = 'treble';
+      clefDetected = true;
+    } else {
+      // bass: two dots to the right of the bulb (either inside the merged zone or just beyond it)
+      const zoneComps = comps.filter((c) => zone!.ids.has(c.id));
+      const bulb = zoneComps.reduce((m, c) => (c.area > m.area ? c : m), zoneComps[0]);
+      const dots = comps.filter((c) => {
+        const w = c.x1 - c.x0 + 1;
+        const hh2 = c.y1 - c.y0 + 1;
+        return (
+          c.id !== bulb.id &&
+          w <= 0.7 * d &&
+          hh2 <= 0.7 * d &&
+          c.x0 >= bulb.x0 + 0.4 * (bulb.x1 - bulb.x0) &&
+          c.x0 <= zone!.x1 + 1.2 * d &&
+          c.y0 >= topL - 0.3 * d &&
+          c.y1 <= botL + 0.3 * d
+        );
+      });
+      if (dots.length >= 2 && zh < 5 * d) {
+        for (const id of zone.ids) used.add(id);
+        clefEnd = zone.x1;
+        clef = 'bass';
+        clefDetected = true;
+        for (const dd of dots) {
+          used.add(dd.id);
+          clefEnd = Math.max(clefEnd, dd.x1);
+        }
+      } else if (staff.lowerOfGrand) {
+        for (const id of zone.ids) used.add(id);
+        clefEnd = zone.x1;
+        clef = 'bass';
+        clefDetected = true;
+      } else {
+        clefMissing = true;
+      }
+    }
+  } else {
+    clefMissing = true;
+  }
+
+  // ---- key signature (vertical-stroke based) and time signature
+  const half = (c: Comp) => (c.y0 + c.y1) / 2;
+  const hh = (c: Comp) => c.y1 - c.y0 + 1;
+  const ww = (c: Comp) => c.x1 - c.x0 + 1;
+  const gImg: GImg = { w: W, h: H, d: clean.d };
+  const keyRead = readKeySignature(gImg, d, topL, botL, clefEnd);
+  const keyFifths = keyRead.fifths;
+  const keyEnd = keyFifths !== 0 ? keyRead.endX : clefEnd;
+  let timeSig: { numerator: number; denominator: number } | undefined;
+  let timeSigUnreadable = false;
+  const timeComps = new Set<number>();
+  {
+    const winA = keyEnd + 0.1 * d;
+    const pre = comps
+      .filter((c) => !used.has(c.id) && !isBarline(c) && c.area >= 0.1 * d * d && c.x0 >= winA && c.x0 <= keyEnd + 3.4 * d)
+      .sort((a, b) => a.x0 - b.x0);
+    const digitLike = (c: Comp) =>
+      hh(c) >= 1.2 * d && hh(c) <= 2.6 * d && ww(c) <= 1.9 * d && c.y0 >= topL - 0.4 * d && c.y1 <= botL + 0.4 * d &&
+      (c.y1 <= midL + 0.5 * d || c.y0 >= midL - 0.5 * d);
+    const digits = pre.filter(digitLike);
+    const topRow = digits.filter((c) => half(c) < midL).sort((a, b) => a.x0 - b.x0);
+    const botRow = digits.filter((c) => half(c) >= midL).sort((a, b) => a.x0 - b.x0);
+    // a C-shaped blob centred on the staff (common time; a vertical stroke through it = cut time)
+    const isC = (c: Comp): boolean => {
+      const w = ww(c);
+      const h = hh(c);
+      if (h < 1.5 * d || h > 4.4 * d || w < 0.8 * d || w > 2.1 * d) return false;
+      if (Math.abs(half(c) - midL) > 0.8 * d) return false;
+      if (c.y0 > ly(lines[1]) + 0.4 * d || c.y1 < ly(lines[3]) - 0.4 * d) return false;
+      // left arc inked through the middle rows
+      const yA = Math.round(midL - 0.45 * d);
+      const yB = Math.round(midL + 0.45 * d);
+      let leftRows = 0;
+      let rightInk = 0;
+      let rows = 0;
+      const rw = Math.max(1, Math.round(0.22 * w));
+      for (let y = yA; y <= yB; y++) {
+        rows++;
+        let l = false;
+        for (let x = c.x0; x <= c.x0 + Math.max(2, Math.round(0.35 * w)); x++) if (labels[y * W + x] === c.id) l = true;
+        if (l) leftRows++;
+        for (let x = c.x1 - rw + 1; x <= c.x1; x++) if (labels[y * W + x] === c.id) rightInk++;
+      }
+      if (leftRows < 0.6 * rows) return false;
+      const st = shapeStats(clean, labels, c);
+      // cut time: a stroke running through the whole glyph, arcs on both sides, taller than a plain C
+      if (st.maxVRunFrac >= 0.9 && h >= 2.9 * d) return true;
+      // the C's left arc is a tall curve; a slash or rest only touches its left edge with a short tip
+      let leftExtent = 0;
+      for (let y = c.y0; y <= c.y1; y++) {
+        if (labels[y * W + c.x0] === c.id || labels[y * W + Math.min(W - 1, c.x0 + 1)] === c.id) leftExtent++;
+      }
+      if (leftExtent < 0.85 * d) return false;
+      return h <= 2.7 * d && rightInk <= 0.3 * rows * rw;
+    };
+    const cc = pre.find(isC);
+    const stackX = topRow.length > 0 && botRow.length > 0 && Math.abs(topRow[0].x0 - botRow[0].x0) < 1.2 * d ? topRow[0].x0 : Infinity;
+    if (cc && cc.x0 < stackX) {
+      timeComps.add(cc.id);
+      const st = shapeStats(clean, labels, cc);
+      timeSig = st.maxVRunFrac >= 0.93 ? { numerator: 2, denominator: 2 } : { numerator: 4, denominator: 4 };
+    } else if (stackX < Infinity) {
+      const read = (row: Comp[]): number => {
+        let n = 0;
+        for (const c of row) {
+          const w = ww(c);
+          const h = hh(c);
+          const g = new Uint8Array(w * h);
+          for (let y = 0; y < h; y++)
+            for (let x = 0; x < w; x++) g[y * w + x] = labels[(c.y0 + y) * W + c.x0 + x] === c.id ? 1 : 0;
+          const dg = classifyDigit(g, w, h);
+          if (dg < 0) return -1;
+          n = n * 10 + dg;
+        }
+        return n;
+      };
+      const num = read(topRow);
+      const den = read(botRow);
+      for (const c of [...topRow, ...botRow]) timeComps.add(c.id);
+      if (num >= 1 && num <= 32 && [1, 2, 4, 8, 16, 32].includes(den)) timeSig = { numerator: num, denominator: den };
+      else timeSigUnreadable = true;
+    }
+  }
+  let prefixEnd = Math.max(clefEnd, keyEnd);
+  for (const id of timeComps) prefixEnd = Math.max(prefixEnd, comps[id - 1].x1);
+  const musicStart = prefixEnd + 0.2 * d;
+  for (const c of comps) if (c.x0 >= clefEnd - 0.3 * d && c.x1 <= prefixEnd + 0.15 * d) used.add(c.id);
+  for (const id of timeComps) used.add(id);
+
+  // ---- slash marks (chord comping): thick diagonal strokes, no round head
+  const slashes: { cx: number; cy: number }[] = [];
+  const slashIds = new Set<number>();
+  {
+    const hmin0 = Math.max(3, Math.round(0.4 * d));
+    for (const c of comps) {
+      if (used.has(c.id) || isBarline(c) || c.x0 < musicStart - 0.2 * d) continue;
+      const w = ww(c);
+      const h = hh(c);
+      if (w < 1.0 * d || w > 3.2 * d || h < 0.9 * d || h > 4.4 * d || c.area < 0.5 * d * d) continue;
+      let n = 0;
+      let sx = 0;
+      let sy = 0;
+      let sxx = 0;
+      let syy = 0;
+      let sxy = 0;
+      let cx0 = Infinity;
+      let cx1 = -Infinity;
+      let cy0 = Infinity;
+      let cy1 = -Infinity;
+      for (let y = c.y0; y <= c.y1; y++)
+        for (let x = c.x0; x <= c.x1; x++) {
+          const i = y * W + x;
+          if (labels[i] !== c.id || hrun[i] < hmin0) continue;
+          n++;
+          sx += x;
+          sy += y;
+          sxx += x * x;
+          syy += y * y;
+          sxy += x * y;
+          if (x < cx0) cx0 = x;
+          if (x > cx1) cx1 = x;
+          if (y < cy0) cy0 = y;
+          if (y > cy1) cy1 = y;
+        }
+      if (n < 0.35 * d * d) continue;
+      const mx = sx / n;
+      const my = sy / n;
+      const vxx = sxx / n - mx * mx;
+      const vyy = syy / n - my * my;
+      const vxy = sxy / n - mx * my;
+      const tr = vxx + vyy;
+      const det = vxx * vyy - vxy * vxy;
+      const disc = Math.sqrt(Math.max(0, (tr * tr) / 4 - det));
+      const l1 = tr / 2 + disc;
+      const l2 = Math.max(1e-6, tr / 2 - disc);
+      const elong = Math.sqrt(l1 / l2);
+      const theta = 0.5 * Math.atan2(2 * vxy, vxx - vyy); // image coords (y down)
+      const slope = (-theta * 180) / Math.PI; // positive = rising to the right
+      const coreW = cx1 - cx0 + 1;
+      const coreH = cy1 - cy0 + 1;
+      if (n >= 0.86 * c.area && elong >= 2.3 && slope >= 18 && slope <= 75 && coreW >= 0.9 * d && coreW <= 3.0 * d && coreH >= 0.8 * d && coreH <= 2.6 * d && Math.abs(my - midL) <= 1.8 * d) {
+        slashes.push({ cx: mx + rx0, cy: my + ry0 });
+        slashIds.add(c.id);
+      }
+    }
+  }
+
+  // ---- multi-measure rests (thick bar on the middle line, number above)
+  const multiRests: { x0: number; x1: number; count: number; guessed: boolean }[] = [];
+  const mrIds = new Set<number>();
+  {
+    const bars = findMultiRestBars({ w: W, h: H, d: src.d }, d, t, midL, lx(staff.left), lx(staff.right)).filter((b) => b.x0 > musicStart - 0.2 * d);
+    for (const b of bars) {
+      // skip bars made of a beam/tie: require the bar not to be attached to noteheads (few comps overlap its row band)
+      let count = 1;
+      let guessed = true;
+      const cxm = (b.x0 + b.x1) / 2;
+      const cand = comps
+        .filter((c) => c.y1 < topL - 0.3 * d && c.y0 > topL - 4.2 * d && hh(c) >= 0.8 * d && hh(c) <= 2.8 * d && ww(c) <= 1.9 * d && c.x0 >= b.x0 && c.x1 <= b.x1)
+        .sort((a, bb) => Math.abs((a.x0 + a.x1) / 2 - cxm) - Math.abs((bb.x0 + bb.x1) / 2 - cxm));
+      if (cand.length > 0) {
+        const seed = cand[0];
+        const group = [seed];
+        for (const c of cand.slice(1)) {
+          const near = group.some((g) => Math.abs(c.y0 - g.y0) <= 0.4 * d && (c.x0 - g.x1 <= 0.6 * d && g.x0 - c.x1 <= 0.6 * d));
+          if (near && group.length < 3) group.push(c);
+        }
+        group.sort((a, bb) => a.x0 - bb.x0);
+        let n = 0;
+        let okRead = true;
+        for (const c of group) {
+          const w = ww(c);
+          const h = hh(c);
+          const g = new Uint8Array(w * h);
+          for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) g[y * w + x] = labels[(c.y0 + y) * W + c.x0 + x] === c.id ? 1 : 0;
+          const dg = classifyDigit(g, w, h);
+          if (dg < 0) {
+            okRead = false;
+            break;
+          }
+          n = n * 10 + dg;
+        }
+        if (okRead && n >= 2 && n <= 99) {
+          count = n;
+          guessed = false;
+        }
+      }
+      multiRests.push({ x0: b.x0 + rx0, x1: b.x1 + rx0, count, guessed });
+      for (const c of comps) if (c.x0 >= b.x0 - 3 && c.x1 <= b.x1 + 3 && c.y0 <= midL && c.y1 >= midL && hh(c) <= 2.4 * d) mrIds.add(c.id);
+    }
+  }
+
+  // ---- opened mask for filled noteheads
   const hmin = Math.max(2, Math.round(0.5 * d));
   const vmin = Math.max(2, Math.round(0.7 * d));
   const mask = new Uint8Array(W * H);
@@ -545,53 +841,53 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
     hollow: boolean;
     comp: number;
     conf: number;
+    holeHW?: number;
+    coreArea?: number;
+    coreFill?: number;
   }
   const rawHeads: RawHead[] = [];
 
-  // hollow heads from holes
+  // hollow heads: ring detection on the ORIGINAL crop (holes survive staff-line removal there)
   const hollowBoxes: { x0: number; y0: number; x1: number; y1: number }[] = [];
-  for (const c of comps) {
-    const w = c.x1 - c.x0 + 1;
-    const h = c.y1 - c.y0 + 1;
-    if (w < 1.0 * d || h < 0.8 * d || c.area < 0.5 * d * d || w * h > 60 * d * d) continue;
-    if (isBarline(c) || isClefCand(c)) continue;
-    // digit-like blobs (time signature) never contain noteheads
-    if (h >= 1.4 * d && h <= 2.6 * d && w <= 1.7 * d) continue;
-    const cacc = classifyAccidental(shapeStats(clean, labels, c), d, t);
-    if (cacc && (cacc.kind === 'sharp' || cacc.kind === 'natural')) continue;
-    const holes = findHoles(W, labels, c);
-    for (const hl of holes) {
-      const hw = hl.x1 - hl.x0 + 1;
-      const hh = hl.y1 - hl.y0 + 1;
-      if (hw < 0.25 * d || hh < 0.2 * d || hw > 1.1 * d || hh > 0.9 * d) continue;
-      if (hl.area / (hw * hh) < 0.55) continue;
-      const hcx = Math.round((hl.x0 + hl.x1) / 2);
-      const hcy = Math.round((hl.y0 + hl.y1) / 2);
-      const cap = Math.round(0.7 * d);
-      let lw = 0;
-      while (lw < cap && ink(hl.x0 - 1 - lw, hcy)) lw++;
-      let rw = 0;
-      while (rw < cap && ink(hl.x1 + 1 + rw, hcy)) rw++;
-      const ringW = lw + hw + rw;
-      if (ringW < 0.95 * d || ringW > 2.1 * d) continue;
-      let uh = 0;
-      while (uh < cap && ink(hcx, hl.y0 - 1 - uh)) uh++;
-      let dh = 0;
-      while (dh < cap && ink(hcx, hl.y1 + 1 + dh)) dh++;
-      const ringH = uh + hh + dh;
-      if (ringH < 0.75 * d || ringH > 1.6 * d) continue;
-      const cx = (hl.x0 + hl.x1 + 1) / 2;
-      const cy = (hl.y0 + hl.y1 + 1) / 2;
-      rawHeads.push({ cx, cy, hollow: true, comp: c.id, conf: 0.8 });
-      hollowBoxes.push({ x0: cx - 0.8 * d, x1: cx + 0.8 * d, y0: cy - 0.6 * d, y1: cy + 0.6 * d });
+  const ringIds = new Set<number>();
+  const hollowFound = findHollowHeads({ w: W, h: H, d: src.d }, d, t, (x, i) => ly(lineY(staff, i, x + rx0)));
+  for (const hf of hollowFound) {
+    if (hf.cx <= musicStart || hf.cy < topL - 4.6 * d || hf.cy > botL + 4.6 * d) continue;
+    // ring components (cleaned image): mark them as note components so they are not reinterpreted as rests/ties
+    const ids = new Map<number, number>();
+    for (let y = Math.round(hf.cy - 0.7 * d); y <= Math.round(hf.cy + 0.7 * d); y++)
+      for (let x = Math.round(hf.cx - 0.85 * d); x <= Math.round(hf.cx + 0.85 * d); x++) {
+        if (x < 0 || y < 0 || x >= W || y >= H) continue;
+        const l = labels[y * W + x];
+        if (l) ids.set(l, (ids.get(l) ?? 0) + 1);
+      }
+    let main = 0;
+    let mainN = 0;
+    for (const [id, n] of ids) {
+      const c = comps[id - 1];
+      if (ww(c) <= 2.4 * d && n > mainN) {
+        main = id;
+        mainN = n;
+      }
     }
+    if (main === 0) {
+      let bn = 0;
+      for (const [id, n] of ids) if (n > bn) {
+        bn = n;
+        main = id;
+      }
+    }
+    if (main && (used.has(main) || slashIds.has(main) || mrIds.has(main))) continue;
+    rawHeads.push({ cx: hf.cx, cy: hf.cy, hollow: true, comp: main, conf: hf.conf, holeHW: hf.holeHW });
+    hollowBoxes.push({ x0: hf.cx - 0.8 * d, x1: hf.cx + 0.8 * d, y0: hf.cy - 0.6 * d, y1: hf.cy + 0.6 * d });
+    for (const [id] of ids) if (ww(comps[id - 1]) <= 2.4 * d) ringIds.add(id);
   }
 
   // filled heads from opened cores
   for (const mc of mcomps) {
     const w = mc.x1 - mc.x0 + 1;
     const h = mc.y1 - mc.y0 + 1;
-    if (mc.area < 0.3 * d * d || w < 0.45 * d || h < 0.5 * d) continue;
+    if (mc.area < 0.4 * d * d || w < 0.82 * d || h < 0.65 * d) continue;
     if (mc.area / (w * h) < 0.45) continue;
     // find parent comp
     let comp = 0;
@@ -602,13 +898,15 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
           break;
         }
     const pc = comps[comp - 1];
-    if (isClefCand(pc)) continue;
+    if (isClefCand(pc) || used.has(pc.id) || slashIds.has(pc.id) || mrIds.has(pc.id)) continue;
     const pw = pc.x1 - pc.x0 + 1;
     const ph = pc.y1 - pc.y0 + 1;
     // quarter-rest / accidental-sized blobs without a stem are not noteheads
     if (ph > 1.7 * d && ph < 2.6 * d && pw < 1.2 * d) continue;
     // half / whole rests (a thin bar sitting on a line) are shorter than any notehead
     if (ph < 0.8 * d) continue;
+    // solid rectangles (whole / half rest merged with their staff line) are not heads
+    if (pw >= 0.8 * d && pw <= 2.2 * d && ph <= 1.05 * d && pc.area / (pw * ph) >= 0.88) continue;
     const pieces: { x0: number; x1: number }[] = [];
     const splitX = (xa: number, xb: number) => {
       if (xb - xa + 1 >= 2.0 * d) {
@@ -647,13 +945,15 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
       const hh = ymax - ymin + 1;
       const n = Math.max(1, Math.floor(hh / (0.9 * d) + 0.25));
       const single = hh / n;
+      // beams, flags and other thick strokes are taller / wider than any notehead
+      if (single > 1.3 * d || single < 0.55 * d || xmax - xmin + 1 > 1.55 * d || (xmax - xmin + 1) / single > 1.5) continue;
       for (let i = 0; i < n; i++) {
         const cx = (xmin + xmax + 1) / 2;
         const cy = ymin + (i + 0.5) * single;
         let conf = 0.9;
         if (single < 0.6 * d || single > 1.25 * d) conf *= 0.7;
         if (n > 1) conf *= 0.9;
-        rawHeads.push({ cx, cy, hollow: false, comp, conf });
+        rawHeads.push({ cx, cy, hollow: false, comp, conf, coreArea: mc.area / n, coreFill: mc.area / (w * h) });
       }
     }
   }
@@ -675,146 +975,12 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
   const noteComps = new Set<number>(heads0.map((h) => h.comp));
 
   // ---- other (non-note) components
-  const others = comps.filter((c) => !noteComps.has(c.id) && c.area >= 2);
-  const rest0 = others;
-
-  // ---- clef
-  let clef: ClefKind = staff.lowerOfGrand ? 'bass' : opts.defaultClef;
-  let clefDetected = false;
-  let clefEnd = lx(staff.left);
-  const sortedRest = [...rest0].sort((a, b) => a.x0 - b.x0);
-  const used = new Set<number>();
-  if (zone) {
-    for (const id of zone.ids) used.add(id);
-    clefEnd = zone.x1;
-    const zh = zone.y1 - zone.y0 + 1;
-    const spans = zone.y0 < topL - 0.5 * d && zone.y1 > botL + 0.5 * d;
-    if (zh >= 5 * d || spans) {
-      clef = 'treble';
-      clefDetected = true;
-    } else {
-      // bass: two dots to the right of the bulb (either inside the merged zone or just beyond it)
-      const zoneComps = comps.filter((c) => zone!.ids.has(c.id));
-      const bulb = zoneComps.reduce((m, c) => (c.area > m.area ? c : m), zoneComps[0]);
-      const dots = comps.filter((c) => {
-        const w = c.x1 - c.x0 + 1;
-        const hh2 = c.y1 - c.y0 + 1;
-        return (
-          c.id !== bulb.id &&
-          w <= 0.7 * d &&
-          hh2 <= 0.7 * d &&
-          c.x0 >= bulb.x0 + 0.4 * (bulb.x1 - bulb.x0) &&
-          c.x0 <= zone!.x1 + 1.2 * d &&
-          c.y0 >= topL - 0.3 * d &&
-          c.y1 <= botL + 0.3 * d
-        );
-      });
-      if (dots.length >= 2) {
-        clef = 'bass';
-        clefDetected = true;
-        for (const dd of dots) {
-          used.add(dd.id);
-          clefEnd = Math.max(clefEnd, dd.x1);
-        }
-      } else if (staff.lowerOfGrand) {
-        clef = 'bass';
-        clefDetected = true;
-      } else {
-        warnings.push('Unrecognized clef (neither treble nor bass); assumed ' + clef + '.');
-      }
-    }
-  } else {
-    warnings.push('No clef found on a staff; assumed ' + clef + '.');
-  }
-
-  // ---- key & time signature (between clef and first note)
-  const firstHeadX = heads0.filter((h) => h.cx > clefEnd + 0.3 * d).reduce((m, h) => Math.min(m, h.cx - 0.65 * d), Infinity);
-  const pre = sortedRest.filter((c) => !used.has(c.id) && c.x0 >= clefEnd - 0.2 * d && c.x1 <= firstHeadX + 0.1 * d);
-  const half = (c: Comp) => (c.y0 + c.y1) / 2;
-  const hh = (c: Comp) => c.y1 - c.y0 + 1;
-  const ww = (c: Comp) => c.x1 - c.x0 + 1;
-  // stacked pairs → time signature digits
-  const digitLike = (c: Comp) =>
-    hh(c) >= 1.2 * d && hh(c) <= 2.6 * d && ww(c) <= 1.9 * d && c.y0 >= topL - 0.4 * d && c.y1 <= botL + 0.4 * d &&
-    (c.y1 <= midL + 0.5 * d || c.y0 >= midL - 0.5 * d);
-  const digits = pre.filter(digitLike);
-  let timeSig: { numerator: number; denominator: number } | undefined;
-  const timeComps = new Set<number>();
-  const topRow = digits.filter((c) => half(c) < midL).sort((a, b) => a.x0 - b.x0);
-  const botRow = digits.filter((c) => half(c) >= midL).sort((a, b) => a.x0 - b.x0);
-  if (topRow.length > 0 && botRow.length > 0 && Math.abs(topRow[0].x0 - botRow[0].x0) < 1.2 * d) {
-    const read = (row: Comp[]): number => {
-      let n = 0;
-      for (const c of row) {
-        const w = ww(c);
-        const h = hh(c);
-        const g = new Uint8Array(w * h);
-        for (let y = 0; y < h; y++)
-          for (let x = 0; x < w; x++) g[y * w + x] = labels[(c.y0 + y) * W + c.x0 + x] === c.id ? 1 : 0;
-        const dg = classifyDigit(g, w, h);
-        if (dg < 0) return -1;
-        n = n * 10 + dg;
-      }
-      return n;
-    };
-    const num = read(topRow);
-    const den = read(botRow);
-    for (const c of [...topRow, ...botRow]) timeComps.add(c.id);
-    if (num >= 1 && num <= 32 && [1, 2, 4, 8, 16, 32].includes(den)) timeSig = { numerator: num, denominator: den };
-    else warnings.push('Time signature could not be read; assumed 4/4.');
-  } else {
-    // common / cut time
-    const cc = pre.find((c) => hh(c) >= 1.6 * d && hh(c) <= 2.8 * d && ww(c) >= 1.2 * d && ww(c) <= 2.2 * d && c.y0 < ly(lines[1]) + 0.3 * d && c.y1 > ly(lines[3]) - 0.3 * d);
-    if (cc) {
-      timeComps.add(cc.id);
-      const st = shapeStats(clean, labels, cc);
-      timeSig = st.maxVRunFrac >= 0.95 ? { numerator: 2, denominator: 2 } : { numerator: 4, denominator: 4 };
-    }
-  }
-
-  // key signature: accidentals before the time signature / first note
-  let keyCount = 0;
-  let sharps = 0;
-  let flats = 0;
-  let lastX = clefEnd;
-  const keyComps: Comp[] = [];
-  const keyCands = pre.filter((c) => !timeComps.has(c.id)).sort((a, b) => a.x0 - b.x0);
-  const limitX = timeComps.size
-    ? Math.min(...[...timeComps].map((id) => comps[id - 1].x0))
-    : Infinity;
-  for (const c of keyCands) {
-    if (c.x0 >= limitX) break;
-    if (c.x0 - lastX > (keyCount === 0 ? 3.2 * d : 1.8 * d)) break;
-    const a = classifyAccidental(shapeStats(clean, labels, c), d, t);
-    if (!a) break;
-    keyComps.push(c);
-    keyCount++;
-    if (a.kind === 'sharp') sharps++;
-    else if (a.kind === 'flat') flats++;
-    lastX = c.x1;
-  }
-  // The last accidental may belong to the first note instead (e.g. a lone sharp right before a head)
-  if (keyComps.length > 0) {
-    const last = keyComps[keyComps.length - 1];
-    const nextHead = heads0.filter((h) => h.cx - 0.65 * d > last.x1 - 0.2 * d).sort((a, b) => a.cx - b.cx)[0];
-    if (nextHead && !timeSig && nextHead.cx - 0.65 * d - last.x1 <= 0.9 * d) {
-      const a = classifyAccidental(shapeStats(clean, labels, last), d, t);
-      const ref = a?.kind === 'flat' ? last.y1 - 0.4 * d : half(last);
-      if (Math.abs(nextHead.cy - ref) <= 0.7 * d) {
-        keyComps.pop();
-        keyCount--;
-        if (a?.kind === 'sharp') sharps--;
-        else if (a?.kind === 'flat') flats--;
-      }
-    }
-  }
-  const keyFifths = Math.max(-7, Math.min(7, sharps >= flats ? sharps : -flats));
-  for (const c of keyComps) used.add(c.id);
-  for (const id of timeComps) used.add(id);
-  let musicStart = clefEnd;
-  for (const c of keyComps) musicStart = Math.max(musicStart, c.x1);
-  for (const id of timeComps) musicStart = Math.max(musicStart, comps[id - 1].x1);
-  musicStart += 0.2 * d;
+  const others = comps.filter((c) => {
+    if (noteComps.has(c.id) || c.area < 2 || slashIds.has(c.id) || mrIds.has(c.id)) return false;
+    if (ringIds.has(c.id)) return false;
+    return true;
+  });
+  const sortedRest = [...others].sort((a, b) => a.x0 - b.x0);
 
   // keep only heads after the prefix
   const heads1 = heads0.filter((h) => h.cx > musicStart);
@@ -844,7 +1010,7 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
     }
     return { top, bottom };
   };
-  const stemFor = (cx: number, cy: number): StemCand | null => {
+  const stemFor = (cx: number, cy: number, holeHW = 0): StemCand | null => {
     let best: (StemCand & { len: number }) | null = null;
     const win = Math.max(1, Math.round(0.35 * d));
     const cols: { x: number; top: number; bottom: number; len: number }[] = [];
@@ -855,7 +1021,7 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
         let bt = 0;
         let bb = 0;
         for (let r = Math.round(cy) - win; r <= Math.round(cy) + win; r++) {
-          if (!ink(xx, r) || !attachedAt(cx, xx, r)) continue;
+          if (!ink(xx, r) || !attachedAt(holeHW > 0 ? cx + side * (holeHW + 1) : cx, xx, r)) continue;
           const e = vExtent(xx, r);
           const len = e.bottom - e.top + 1;
           if (len > bl) {
@@ -879,7 +1045,7 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
   const headStem: number[] = [];
   const stemHeads: number[][] = [];
   heads1.forEach((h) => {
-    const sc = stemFor(h.cx, h.cy);
+    const sc = stemFor(h.cx, h.cy, h.hollow ? (h.holeHW ?? 0) : 0);
     if (!sc) {
       headStem.push(-1);
       return;
@@ -902,6 +1068,11 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
   const dropHead = new Set<number>();
   heads1.forEach((h, i) => {
     if (h.hollow || headStem[i] >= 0) return;
+    // a stemless filled blob that is small or too solid is a beam / flag / accent fragment, not a notehead
+    if ((h.coreArea ?? Infinity) < 0.95 * d * d || (h.coreFill ?? 0) > 0.92) {
+      dropHead.add(i);
+      return;
+    }
     for (const s of stems) {
       const sheads = stemHeads[s.id].map((hi) => heads1[hi].cy);
       const tipUp = Math.min(...sheads) - s.top >= s.bottom - Math.max(...sheads);
@@ -911,6 +1082,16 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
         break;
       }
     }
+  });
+
+  // a hollow "head" on the stem of filled heads is a flag loop, not a notehead
+  heads1.forEach((h, i) => {
+    if (!h.hollow || headStem[i] < 0) return;
+    const sid = headStem[i];
+    const filled = stemHeads[sid].filter((hi) => !heads1[hi].hollow);
+    if (filled.length === 0) return;
+    const dy = Math.min(...filled.map((hi) => Math.abs(heads1[hi].cy - h.cy)));
+    if (dy > 1.2 * d) dropHead.add(i);
   });
 
   // stem direction, flags and beams
@@ -933,7 +1114,11 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
       const ya = s.up ? Math.round(s.top - 1) : Math.round(s.bottom - zone);
       const yb = s.up ? Math.round(s.top + zone) : Math.round(s.bottom + 1);
       const minRun = Math.max(2 * t, Math.round(0.28 * d));
-      const maxRun = Math.round(0.85 * d);
+      const maxRun = Math.round(2.4 * d);
+      const beamB = 0.45 * d;
+      const beamG = 0.25 * d;
+      // a run may be several beams fused together (or with a staff line): estimate how many
+      const beamsIn = (run: number): number => (run <= 1.5 * beamB + 1 ? 1 : Math.max(1, Math.round((run + beamG) / (beamB + beamG))));
       for (const side of [1, -1]) {
         const x = Math.round(s.x - 0.5 + side * 0.5 * d);
         let cnt = 0;
@@ -946,7 +1131,7 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
             if (run === 0) runStartY = y;
             run++;
           } else {
-            if (run >= minRun && run <= maxRun) cnt++;
+            if (run >= minRun && run <= maxRun) cnt += beamsIn(run);
             void runStartY;
             run = 0;
           }
@@ -994,8 +1179,46 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
   const accs: { kind: AccidentalKind; comp: Comp; conf: number }[] = [];
   const dotsC: Comp[] = [];
   const ties: Comp[] = [];
-  const restBlobs = sortedRest.filter((c) => !used.has(c.id) && c.x0 >= clefEnd - 1 && c.x1 > musicStart - 0.2 * d);
-  for (const c of restBlobs) {
+  const restBlobs0 = sortedRest.filter((c) => !used.has(c.id) && c.x0 >= clefEnd - 1 && c.x1 > musicStart - 0.2 * d);
+  // staff-line removal can cut a rest in two across a line: re-join fragments stacked on a line row
+  const frag = new Set<number>();
+  const restBlobs: Comp[] = [];
+  {
+    const taken0 = new Set<number>();
+    for (let i = 0; i < restBlobs0.length; i++) {
+      const a = restBlobs0[i];
+      if (taken0.has(a.id)) continue;
+      let cur: Comp = a;
+      for (let j = i + 1; j < restBlobs0.length; j++) {
+        const b = restBlobs0[j];
+        if (taken0.has(b.id)) continue;
+        if (b.x0 > cur.x1 + 2) break;
+        const top = b.y0 >= cur.y0 ? cur : b;
+        const bot = b.y0 >= cur.y0 ? b : cur;
+        const gap = bot.y0 - top.y1 - 1;
+        if (gap < -3 || gap > t + 3) continue;
+        const ov = Math.min(cur.x1, b.x1) - Math.max(cur.x0, b.x0) + 1;
+        if (ov < -2) continue;
+        const gy = (top.y1 + bot.y0) / 2;
+        let onLine = false;
+        for (let li = 0; li < 5; li++) if (Math.abs(ly(lineY(staff, li, (cur.x0 + cur.x1) / 2 + rx0)) - gy) <= (t + 3) / 2 + 1) onLine = true;
+        if (!onLine) continue;
+        const mergedC: Comp = {
+          id: cur.id,
+          x0: Math.min(cur.x0, b.x0),
+          x1: Math.max(cur.x1, b.x1),
+          y0: Math.min(cur.y0, b.y0),
+          y1: Math.max(cur.y1, b.y1),
+          area: cur.area + b.area + Math.max(0, gap) * Math.max(1, ov),
+        };
+        taken0.add(b.id);
+        cur = mergedC;
+        frag.add(cur.id);
+      }
+      restBlobs.push(cur);
+    }
+  }
+      for (const c of restBlobs) {
     const w = ww(c);
     const h = hh(c);
     const fill = c.area / (w * h);
@@ -1008,13 +1231,13 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
       ties.push(c);
       continue;
     }
-    const acc = classifyAccidental(shapeStats(clean, labels, c), d, t);
+    const acc = frag.has(c.id) ? null : classifyAccidental(shapeStats(clean, labels, c), d, t);
     if (acc) {
       accs.push({ kind: acc.kind, comp: c, conf: acc.conf });
       continue;
     }
     if (cyc < topL - 0.3 * d || cyc > botL + 0.3 * d) continue;
-    if (w >= 0.7 * d && w <= 1.6 * d && h <= 0.85 * d && fill >= 0.7) {
+    if (w >= 0.7 * d && w <= 2.1 * d && h <= 1.0 * d && fill >= 0.7) {
       const dTop = Math.abs(c.y0 - ly(lines[1]));
       const dBot = Math.abs(c.y1 - ly(lines[2]));
       if (Math.min(dTop, dBot) <= 0.45 * d) {
@@ -1023,8 +1246,8 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
       }
       continue;
     }
-    if (w <= 1.4 * d && h >= 1.2 * d && h <= 3.7 * d) {
-      const kind: RestKind = h >= 2.2 * d ? 'quarter' : 'eighth';
+    if (w <= 2.2 * d && h >= 1.2 * d && h <= 3.7 * d && (h >= 2.55 * d || w <= 1.7 * d)) {
+      const kind: RestKind = h >= 2.55 * d ? 'quarter' : 'eighth';
       rests.push({ kind, x0: c.x0 + rx0, x1: c.x1 + rx0, y0: c.y0 + ry0, y1: c.y1 + ry0, dots: 0 });
     }
   }
@@ -1083,6 +1306,7 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
     }
   }
   // ties between equal-pitch heads
+  let tieOut: Notehead | undefined;
   const order = noteheads.map((_, i) => i).sort((a, b) => noteheads[a].cx - noteheads[b].cx);
   for (const c of ties) {
     const cL = c.x0 + rx0;
@@ -1101,6 +1325,7 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
         if (right < 0 || Math.abs(nh.cy - leftY) < Math.abs(noteheads[right].cy - leftY)) right = i;
       }
     }
+    if (right < 0 && cR >= staff.right - 2.5 * d) tieOut = noteheads[left]; // tie arc running off the end of the line
     if (left >= 0 && right >= 0 && left !== right) {
       const a = noteheads[left];
       const b = noteheads[right];
@@ -1132,5 +1357,11 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
     rests: restsAfter,
     barlines: barX,
     warnings,
+    staffRight: staff.right,
+    clefMissing,
+    timeSigUnreadable,
+    slashes,
+    multiRests,
+    tieOut,
   };
 }

@@ -116,6 +116,18 @@ export interface StaffSymbols {
   /** x positions of barlines (after the music start) */
   barlines: number[];
   warnings: string[];
+  /** right edge of the staff (page x) */
+  staffRight?: number;
+  /** no clef glyph was found on this staff (the default / inherited clef is used) */
+  clefMissing?: boolean;
+  /** a time-signature digit stack was found but could not be read */
+  timeSigUnreadable?: boolean;
+  /** chord slash marks (diagonal strokes on the middle line); they never become notes */
+  slashes?: { cx: number; cy: number }[];
+  /** multi-measure rest bars with the number of measures they stand for */
+  multiRests?: { x0: number; x1: number; count: number; guessed: boolean }[];
+  /** the staff ends with a tie arc that has no right-hand notehead (tie across the line break) */
+  tieOut?: Notehead;
 }
 
 export interface PageResult {
