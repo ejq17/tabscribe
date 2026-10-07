@@ -149,6 +149,8 @@ export interface Layout {
   clipped: boolean;
   /** the measure contained a triplet group */
   tuplet: boolean;
+  /** a single low-confidence event was halved / doubled / dotted so the bar adds up (instead of rescaling everything) */
+  repaired?: string;
 }
 
 /**
@@ -170,7 +172,10 @@ export function layoutMeasure(events0: RhythmEvent[], nominal: number, ppq: numb
   const tgt = std.map((v) => v);
   let total = std.reduce((s, v) => s + v, 0);
   let tuplet = false;
-  const mismatch0 = total > 0 && Math.abs(total - nominal) > 1;
+  // rest-only bars (chord-hit / slash notation, cue marks) produce no notes: nothing to repair, never a mismatch
+  const restOnly = !events.some((e) => e.kind === 'cluster');
+  const stdOrig = std.slice();
+  const mismatch0 = !restOnly && total > 0 && Math.abs(total - nominal) > 1;
   if (mismatch0) {
     // find three consecutive equal events whose 2:3 compression makes the bar add up
     for (let i = 0; i + 2 < std.length && !tuplet; i++) {
@@ -187,10 +192,32 @@ export function layoutMeasure(events0: RhythmEvent[], nominal: number, ppq: numb
       }
     }
   }
+  // measure repair: when exactly one event can be halved / doubled / (un)dotted to make the bar add up, prefer that
+  // over rescaling every event; skipped when several events (of similar confidence) could explain the error
+  let repaired: string | undefined;
+  if (mismatch0 && !tuplet && !restOnly && !(allowUnderfull && total < nominal)) {
+    const conf = events.map((e) => (e.kind === 'cluster' ? Math.min(...e.cluster.heads.map((h) => h.confidence)) : 0.9));
+    const cands: { i: number; nv: number; conf: number; name: string }[] = [];
+    std.forEach((v, i) => {
+      for (const [f, name] of [[2, 'doubled'], [0.5, 'halved'], [1.5, 'dotted'], [2 / 3, 'undotted']] as const) {
+        const nv = Math.round(v * f);
+        if (nv < ppq / 4 || nv % (ppq / 8) !== 0 || Math.abs(nv - v * f) > 1) continue;
+        if (Math.abs(total - v + nv - nominal) <= 1) cands.push({ i, nv, conf: conf[i], name });
+      }
+    });
+    cands.sort((a, b) => a.conf - b.conf);
+    if (cands.length >= 1 && (cands.length === 1 || cands[1].conf - cands[0].conf >= 0.04 || cands.every((c) => c.i === cands[0].i && c.name === cands[0].name))) {
+      const c = cands[0];
+      std[c.i] = c.nv;
+      tgt[c.i] = c.nv;
+      total = total - stdOrig[c.i] + c.nv;
+      repaired = `event ${c.i + 1} ${c.name}`;
+    }
+  }
   let scale = 1;
   let scaled = false;
   let clipped = false;
-  const mismatchLeft = total > 0 && Math.abs(total - nominal) > 1;
+  const mismatchLeft = !restOnly && total > 0 && Math.abs(total - nominal) > 1;
   const mismatch = mismatch0 || mismatchLeft;
   if (mismatchLeft) {
     const ratio = nominal / total;
@@ -239,12 +266,12 @@ export function layoutMeasure(events0: RhythmEvent[], nominal: number, ppq: numb
     placed.push({
       event: e,
       start,
-      scale: std[i] > 0 ? adv / std[i] : 1,
+      scale: stdOrig[i] > 0 ? adv / stdOrig[i] : 1,
       advance: adv,
       grid: grids[i],
       restTicks: e.kind === 'rest' ? adv : undefined,
     });
     cursor += q[i];
   });
-  return { placed, total, scaled, mismatch, clipped, tuplet };
+  return { placed, total, scaled, mismatch, clipped, tuplet, repaired };
 }

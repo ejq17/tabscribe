@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { recognizeImageData } from '../src/omr';
 import type { Score } from '../src/core';
-import { Canvas, TOP, lineC, yStep, staff, barline, filledHead, trebleClef } from './fixtures/omr/synth';
+import { Canvas, TOP, lineC, yStep, staff, barline, filledHead, hollowHead, trebleClef } from './fixtures/omr/synth';
 
 const notesOf = (s: Score) => s.tracks.flatMap((t) => t.notes).sort((a, b) => a.start - b.start || b.pitch - a.pitch);
 
@@ -126,5 +126,94 @@ describe('omr: real-engraving robustness (synthetic)', () => {
     for (const n of notes) expect(n.start % 120 === 0 || n.start % 80 === 0).toBe(true);
     const last = notes[3];
     expect(last.start + last.duration).toBeLessThanOrEqual(1920);
+  });
+  it('reads a stemmed hollow half note with the staff line through it as a half (not a quarter)', () => {
+    const c = new Canvas(420, 260);
+    staff(c, 40, 400);
+    ringHead(c, 100, 0, 'up', true); // B4 half on the middle line
+    filledHead(c, 180, 0);
+    filledHead(c, 240, 0);
+    barline(c, 300);
+    c.rect(399, TOP, 400, TOP + 41);
+    const notes = notesOf(recognizeImageData([c.img()]));
+    expect(notes.map((n) => n.duration)).toEqual([960, 480, 480]);
+    expect(notes.map((n) => n.start)).toEqual([0, 960, 1440]);
+  });
+
+  it('reads a dotted eighth + sixteenth pair (360 + 120) with the secondary beam only on the short stem', () => {
+    const c = new Canvas(420, 260);
+    staff(c, 40, 400);
+    filledHead(c, 100, 0, 'up', 35);
+    filledHead(c, 140, 0, 'up', 35);
+    c.rect(105, yStep(0) - 35, 146, yStep(0) - 31); // primary beam over both stems
+    c.rect(135, yStep(0) - 27, 146, yStep(0) - 23); // partial secondary beam on the second stem only
+    c.rect(113, yStep(0) - 7, 116, yStep(0) - 4); // augmentation dot (in the space above the line) right of the first head
+    filledHead(c, 200, 0);
+    hollowHead(c, 260, 0, 'up');
+    barline(c, 320);
+    c.rect(399, TOP, 400, TOP + 41);
+    const notes = notesOf(recognizeImageData([c.img()]));
+    expect(notes.map((n) => n.duration)).toEqual([360, 120, 480, 960]);
+    expect(notes.map((n) => n.start)).toEqual([0, 360, 480, 960]);
+  });
+
+  it('tells a one-flag eighth from two-flag sixteenths', () => {
+    const c = new Canvas(420, 260);
+    staff(c, 40, 400);
+    const flagged = (x: number, flags: number) => {
+      filledHead(c, x, -2, 'up', 35);
+      const top = yStep(-2) - 35;
+      for (let f = 0; f < flags; f++) c.line(x + 7, top + 2 + f * 10, x + 19, top + 10 + f * 10, 5);
+    };
+    flagged(100, 1);
+    flagged(150, 2);
+    flagged(200, 2);
+    filledHead(c, 260, 0);
+    hollowHead(c, 320, 0, 'up');
+    barline(c, 370);
+    c.rect(399, TOP, 400, TOP + 41);
+    const notes = notesOf(recognizeImageData([c.img()]));
+    expect(notes.map((n) => n.duration)).toEqual([240, 120, 120, 480, 960]);
+  });
+
+  it('gives an eighth rest and a quarter rest their exact standard durations', () => {
+    const c = new Canvas(420, 260);
+    staff(c, 40, 400);
+    const mid = yStep(0);
+    // eighth rest: small blob with a diagonal tail (about 2 staff spaces tall)
+    c.ellipse(100, mid - 8, 3, 3);
+    c.line(103, mid - 6, 96, mid + 10, 3);
+    // quarter rest: hooked zig-zag about 3 staff spaces tall
+    const y0 = mid - 14;
+    c.line(150, y0, 162, y0 + 8, 4);
+    c.line(162, y0 + 8, 152, y0 + 16, 4);
+    c.line(152, y0 + 16, 162, y0 + 24, 4);
+    c.ellipse(155, y0 + 27, 4, 3);
+    hollowHead(c, 220, 0, 'up'); // half note after 240 + 480
+    filledHead(c, 300, 0, 'up', 35); // flagged eighth
+    c.line(307, mid - 34, 319, mid - 24, 5);
+    barline(c, 350);
+    c.rect(399, TOP, 400, TOP + 41);
+    const notes = notesOf(recognizeImageData([c.img()]));
+    expect(notes.length).toBe(2);
+    expect(notes[0].start).toBe(720);
+    expect(notes[0].duration).toBe(960);
+    expect(notes[1].start).toBe(1680);
+    expect(notes[1].duration).toBe(240);
+  });
+
+  it('counts beams per stem: a partial secondary beam leaves the third stem an eighth', () => {
+    const c = new Canvas(420, 260);
+    staff(c, 40, 400);
+    for (const x of [100, 140, 180]) filledHead(c, x, 0, 'up', 35);
+    c.rect(105, yStep(0) - 35, 186, yStep(0) - 31); // primary beam across all three
+    c.rect(105, yStep(0) - 27, 146, yStep(0) - 23); // secondary beam only between stems 1 and 2
+    filledHead(c, 240, 0);
+    hollowHead(c, 300, 0, 'up');
+    barline(c, 360);
+    c.rect(399, TOP, 400, TOP + 41);
+    const notes = notesOf(recognizeImageData([c.img()]));
+    expect(notes.map((n) => n.duration)).toEqual([120, 120, 240, 480, 960]);
+    expect(notes.map((n) => n.start)).toEqual([0, 120, 240, 480, 960]);
   });
 });

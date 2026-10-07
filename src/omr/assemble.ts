@@ -221,7 +221,7 @@ export function assembleScore(pages: PageResult[], ppq = 480): Score {
             const id = newNoteId();
             let dur = quantizeTicks(c.durations[hi] * pe.scale, pe.grid);
             dur = Math.max(pe.grid, Math.min(dur, Math.max(pe.grid, nominal - pe.start)));
-            const lowered = layout.clipped ? 0.6 : layout.scaled ? 0.75 : layout.tuplet && layout.mismatch ? 0.8 : layout.mismatch ? 0.85 : 1;
+            const lowered = layout.clipped ? 0.6 : layout.scaled ? 0.75 : layout.repaired ? 0.7 : layout.tuplet && layout.mismatch ? 0.8 : layout.mismatch ? 0.85 : 1;
             const note: Note = {
               id,
               pitch: p.midi,

@@ -101,7 +101,8 @@ interface HoleCand {
  * whose hole is a small enclosed background region (or two half-holes stacked on either side of a staff line).
  * `lineYAt(x, i)` returns the local y of staff line i (0 = top) at column x.
  */
-export function findHollowHeads(img: GImg, d: number, t: number, lineYAt: (x: number, i: number) => number): HollowHead[] {
+export function findHollowHeads(img: GImg, d: number, t: number, lineYAt: (x: number, i: number) => number, onReject?: (why: string, x: number, y: number) => void): HollowHead[] {
+  const rej = (why: string, hc: { x0: number; x1: number; y0: number; y1: number }) => onReject?.(why, (hc.x0 + hc.x1) / 2, (hc.y0 + hc.y1) / 2);
   const { w, h, d: data } = img;
   const { lab, comps } = labelBackground(img);
   const small = comps.filter((c) => {
@@ -122,7 +123,7 @@ export function findHollowHeads(img: GImg, d: number, t: number, lineYAt: (x: nu
       const ox1 = Math.min(a.x1, b.x1);
       const ov = ox1 - ox0 + 1;
       const minW = Math.min(a.x1 - a.x0 + 1, b.x1 - b.x0 + 1);
-      if (ov < 0.6 * minW) continue;
+      if (ov < 0.3 * minW) continue;
       const gy = (a.y1 + b.y0) / 2;
       const cx = (ox0 + ox1) / 2;
       let onLine = false;
@@ -171,9 +172,9 @@ export function findHollowHeads(img: GImg, d: number, t: number, lineYAt: (x: nu
   for (const hc of cands) {
     const bw = hc.x1 - hc.x0 + 1;
     const bh = hc.y1 - hc.y0 + 1;
-    if (bw < 0.3 * d || bh < 0.28 * d) continue;
+    if (bw < 0.3 * d || bh < 0.28 * d){ rej('r1', hc); continue; }
     const fillRatio = hc.area / (bw * bh);
-    if (fillRatio < 0.45) continue;
+    if (fillRatio < 0.45){ rej('r2', hc); continue; }
     // ellipse-like: at least 3 of the 4 bbox corners must not belong to the hole
     let cornersOut = 0;
     for (const [px, py] of [
@@ -185,7 +186,7 @@ export function findHollowHeads(img: GImg, d: number, t: number, lineYAt: (x: nu
       const l = lab[py * w + px];
       if (!hc.ids.includes(l)) cornersOut++;
     }
-    if (cornersOut < 3 && !hc.fill) continue;
+    if (cornersOut < 3 && !hc.fill){ rej('r3', hc); continue; }
     const cx = Math.round((hc.x0 + hc.x1) / 2);
     const cy = Math.round((hc.y0 + hc.y1) / 2);
     // horizontal / vertical rays: try a few rows / columns (the staff line may run through the hole's centre row)
@@ -193,8 +194,8 @@ export function findHollowHeads(img: GImg, d: number, t: number, lineYAt: (x: nu
     let L = ray(hc, cx, cy, -1, 0);
     let R = ray(hc, cx, cy, 1, 0);
     for (const r of rowsTry) {
-      if (r < hc.y0 || r > hc.y1) continue;
-      if (inkAt(cx, r, hc)) continue;
+      if (r < hc.y0 || r > hc.y1)continue;
+      if (inkAt(cx, r, hc))continue;
       const l2 = ray(hc, cx, r, -1, 0);
       const r2 = ray(hc, cx, r, 1, 0);
       if (l2.ok && r2.ok) {
@@ -206,7 +207,7 @@ export function findHollowHeads(img: GImg, d: number, t: number, lineYAt: (x: nu
     let U = ray(hc, cx, cy, 0, -1);
     let D = ray(hc, cx, cy, 0, 1);
     for (const c2 of [cx, cx - Math.round(bw / 4), cx + Math.round(bw / 4)]) {
-      if (c2 < hc.x0 || c2 > hc.x1 || inkAt(c2, cy, hc)) continue;
+      if (c2 < hc.x0 || c2 > hc.x1 || inkAt(c2, cy, hc))continue;
       const u2 = ray(hc, c2, cy, 0, -1);
       const d2 = ray(hc, c2, cy, 0, 1);
       if (u2.ok && d2.ok) {
@@ -215,14 +216,14 @@ export function findHollowHeads(img: GImg, d: number, t: number, lineYAt: (x: nu
         break;
       }
     }
-    if (!(L.ok && R.ok && U.ok && D.ok)) continue;
+    if (!(L.ok && R.ok && U.ok && D.ok)){ rej('r7', hc); continue; }
     const diag = [ray(hc, cx, cy, -1, -1), ray(hc, cx, cy, 1, -1), ray(hc, cx, cy, -1, 1), ray(hc, cx, cy, 1, 1)];
     const goodDiag = diag.filter((r) => r.ok).length;
-    if (goodDiag < 1) continue;
+    if (goodDiag < 1){ rej('r8', hc); continue; }
     const outerW = L.s0 + L.th + R.s0 + R.th;
     const outerH = U.s0 + U.th + D.s0 + D.th;
-    if (outerW < 0.95 * d || outerW > 2.0 * d || outerH < 0.7 * d || outerH > 1.6 * d) continue;
-    if (outerW < 1.0 * outerH) continue; // heads are wider than tall
+    if (outerW < 0.95 * d || outerW > 2.0 * d || outerH < 0.7 * d || outerH > 1.6 * d){ rej('r9', hc); continue; }
+    if (outerW < 0.8 * outerH){ rej('r10', hc); continue; } // heads are wider than tall
     // flat sign look-alike: a long stroke rising from the left edge
     {
       const leftEdge = Math.round(cx - outerW / 2);
@@ -248,7 +249,7 @@ export function findHollowHeads(img: GImg, d: number, t: number, lineYAt: (x: nu
         }
         if (n > bestR) bestR = n;
       }
-      if (best >= 1.5 * d && bestR < 1.0 * d && outerW < 1.15 * d) continue;
+      if (best >= 1.5 * d && bestR < 1.0 * d && outerW < 1.15 * d){ rej('r11', hc); continue; }
     }
     const conf = 0.6 + 0.3 * ((goodDiag + 4) / 8) * (fillRatio > 0.55 ? 1 : 0.85);
     out.push({ cx: hc.fill ? (hc.fill.x0 + hc.fill.x1 + 1) / 2 : (hc.x0 + hc.x1 + 1) / 2, cy: (hc.y0 + hc.y1 + 1) / 2, holeHW: bw / 2, outerW, outerH, conf: Math.min(0.92, conf) });

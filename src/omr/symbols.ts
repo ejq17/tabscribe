@@ -842,6 +842,7 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
     comp: number;
     conf: number;
     holeHW?: number;
+    outerW?: number;
     coreArea?: number;
     coreFill?: number;
   }
@@ -878,7 +879,7 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
       }
     }
     if (main && (used.has(main) || slashIds.has(main) || mrIds.has(main))) continue;
-    rawHeads.push({ cx: hf.cx, cy: hf.cy, hollow: true, comp: main, conf: hf.conf, holeHW: hf.holeHW });
+    rawHeads.push({ cx: hf.cx, cy: hf.cy, hollow: true, comp: main, conf: hf.conf, holeHW: hf.holeHW, outerW: hf.outerW });
     hollowBoxes.push({ x0: hf.cx - 0.8 * d, x1: hf.cx + 0.8 * d, y0: hf.cy - 0.6 * d, y1: hf.cy + 0.6 * d });
     for (const [id] of ids) if (ww(comps[id - 1]) <= 2.4 * d) ringIds.add(id);
   }
@@ -1094,6 +1095,38 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
     if (dy > 1.2 * d) dropHead.add(i);
   });
 
+  const rescued = new Set<number>();
+  // a short stem cannot carry two heads far apart: the smaller blob is the beam / flag end, not a notehead
+  stems.forEach((st, sid) => {
+    const hs = stemHeads[sid].filter((hi) => !dropHead.has(hi));
+    if (hs.length < 2 || (st.bottom - st.top) / d >= 4.8) return;
+    for (let a = 0; a < hs.length; a++)
+      for (let b = a + 1; b < hs.length; b++) {
+        const ha = heads1[hs[a]];
+        const hb = heads1[hs[b]];
+        if (ha.hollow || hb.hollow || dropHead.has(hs[a]) || dropHead.has(hs[b])) continue;
+        if (Math.abs(ha.cy - hb.cy) <= 2.0 * d) continue;
+        dropHead.add((ha.coreArea ?? 0) < (hb.coreArea ?? 0) ? hs[a] : hs[b]);
+      }
+  });
+  // a stemless hollow ring narrower than a whole note is a loop of a rest / accidental
+  heads1.forEach((h, i) => {
+    if (!h.hollow || headStem[i] >= 0) return;
+    const pc = h.comp > 0 ? comps[h.comp - 1] : undefined;
+    // narrow rings, or rings that are part of a tall glyph (quarter-rest zig-zag), are not whole notes
+    const tall = !!pc && pc.y1 - pc.y0 + 1 > 1.9 * d;
+    if ((h.outerW ?? Infinity) < 1.3 * d || tall) {
+      dropHead.add(i);
+      if (tall) rescued.add(h.comp);
+    }
+  });
+  // a hollow "head" in the middle of a long stroke (a flat sign's loop) has stem on both sides; a real head sits at a stem end
+  heads1.forEach((h, i) => {
+    if (!h.hollow || headStem[i] < 0 || stemHeads[headStem[i]].length > 1) return;
+    const st = stems[headStem[i]];
+    if (h.cy - st.top >= 1.0 * d && st.bottom - h.cy >= 1.0 * d) dropHead.add(i);
+  });
+
   // stem direction, flags and beams
   const stemLabelOf = (s: StemInfo): number => {
     const x = Math.round(s.x - 0.5);
@@ -1101,6 +1134,11 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
     for (let dx = -1; dx <= 1; dx++) if (ink(x + dx, y)) return labels[y * W + x + dx];
     return 0;
   };
+  const stemsPerLabel = new Map<number, number>();
+  for (const s of stems) {
+    const l = stemLabelOf(s);
+    stemsPerLabel.set(l, (stemsPerLabel.get(l) ?? 0) + 1);
+  }
   stems.forEach((s, sid) => {
     const ys = stemHeads[sid].map((hi) => heads1[hi].cy);
     const dTop = Math.min(...ys) - s.top;
@@ -1113,30 +1151,55 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
     if (zone >= 0.5 * d) {
       const ya = s.up ? Math.round(s.top - 1) : Math.round(s.bottom - zone);
       const yb = s.up ? Math.round(s.top + zone) : Math.round(s.bottom + 1);
-      const minRun = Math.max(2 * t, Math.round(0.28 * d));
       const maxRun = Math.round(2.4 * d);
       const beamB = 0.45 * d;
       const beamG = 0.25 * d;
       // a run may be several beams fused together (or with a staff line): estimate how many
       const beamsIn = (run: number): number => (run <= 1.5 * beamB + 1 ? 1 : Math.max(1, Math.round((run + beamG) / (beamB + beamG))));
+      // count ink runs of the stem's own component in several columns beside the stem tip; the median over the columns
+      // is robust against ties / noise, and each stem is measured at its own x (partial beams)
+      const minRun1 = Math.max(3, Math.round(0.26 * d));
+      const solo = (stemsPerLabel.get(lab) ?? 1) <= 1;
+      const unitCount = (run: number): number => (solo ? (run <= 1.7 * d ? 1 : 2) : beamsIn(run));
+      const offs: number[] = [];
+      for (let o = Math.round(0.3 * d); o <= Math.round(0.9 * d); o++) offs.push(o);
       for (const side of [1, -1]) {
-        const x = Math.round(s.x - 0.5 + side * 0.5 * d);
-        let cnt = 0;
-        let run = 0;
-        let runStartY = 0;
-        for (let y = ya; y <= yb + 1; y++) {
-          const on = y <= yb && (ink(x, y) || ink(x - 1, y) || ink(x + 1, y)) && labels[y * W + x] !== 0 ? true : false;
-          const inLab = on && (labels[y * W + x] === lab || labels[y * W + x - 1] === lab || labels[y * W + x + 1] === lab);
-          if (inLab) {
-            if (run === 0) runStartY = y;
-            run++;
-          } else {
-            if (run >= minRun && run <= maxRun) cnt += beamsIn(run);
-            void runStartY;
-            run = 0;
+        const counts: number[] = [];
+        for (const off of offs) {
+          const x = Math.round(s.x - 0.5 + side * off);
+          let cnt = 0;
+          let run = 0;
+          for (let y = ya; y <= yb + 1; y++) {
+            const at = (yy: number): boolean => yy <= yb && yy >= 0 && yy < H && x >= 0 && x < W && lab !== 0 && labels[yy * W + x] === lab;
+            // a one pixel hole (anti-aliasing, staff-line residue) does not split a stroke
+            const inLab = at(y) || (run > 0 && at(y + 1) && at(y - 1));
+            if (inLab) run++;
+            else {
+              if (run >= minRun1 && run <= maxRun) {
+                // a beam crossing a staff line keeps a few rows of the line: discount them
+                let eff = run;
+                const r0 = y - run;
+                const r1 = y - 1;
+                for (let li = 0; li < 5; li++) {
+                  const c = ly(lineY(staff, li, x + rx0));
+                  if (c >= r0 - 1 && c <= r1 + 1) {
+                    eff = Math.max(Math.min(run, beamB), run - (t + 1));
+                    break;
+                  }
+                }
+                let onLine = eff < minRun1;
+                // a thin run centred on a staff line is line residue clinging to the stem
+                if (!onLine && run <= t + 1.5)
+                  for (let li = 0; li < 5; li++) if (Math.abs(ly(lineY(staff, li, x + rx0)) - (y - run / 2)) <= t / 2 + 1.5) onLine = true;
+                if (!onLine) cnt += unitCount(eff);
+              }
+              run = 0;
+            }
           }
+          counts.push(cnt);
         }
-        best = Math.max(best, cnt);
+                const nz = counts.filter((c) => c > 0).sort((p, q) => p - q);
+        if (nz.length >= Math.max(2, 0.4 * counts.length)) best = Math.max(best, nz[Math.floor(nz.length / 2)]);
       }
     }
     s.flags = Math.min(3, best);
@@ -1179,7 +1242,10 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
   const accs: { kind: AccidentalKind; comp: Comp; conf: number }[] = [];
   const dotsC: Comp[] = [];
   const ties: Comp[] = [];
-  const restBlobs0 = sortedRest.filter((c) => !used.has(c.id) && c.x0 >= clefEnd - 1 && c.x1 > musicStart - 0.2 * d);
+  const noteheadsUseComp = (id: number): boolean => heads1.some((h, i) => !dropHead.has(i) && h.comp === id);
+  const restBlobs0 = [...sortedRest, ...comps.filter((c) => rescued.has(c.id) && !noteheadsUseComp(c.id))]
+    .sort((a, b) => a.x0 - b.x0)
+    .filter((c) => !used.has(c.id) && c.x0 >= clefEnd - 1 && c.x1 > musicStart - 0.2 * d);
   // staff-line removal can cut a rest in two across a line: re-join fragments stacked on a line row
   const frag = new Set<number>();
   const restBlobs: Comp[] = [];
@@ -1223,7 +1289,10 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
     const h = hh(c);
     const fill = c.area / (w * h);
     const cyc = half(c);
-    if (w <= 0.55 * d && h <= 0.55 * d && w >= 0.15 * d && h >= 0.15 * d && fill >= 0.5) {
+    const roundDot = w <= 0.7 * d && h <= 0.7 * d && Math.abs(w - h) <= 0.35 * d;
+    // a dot sitting on a staff line keeps a few rows of the line after removal and comes out taller than wide
+    const lineDot = w <= 0.6 * d && h <= 0.95 * d && h > 0.7 * d && fill >= 0.55 && c.area >= 0.2 * d * d;
+    if ((roundDot || lineDot) && w >= 0.15 * d && h >= 0.15 * d && fill >= 0.5) {
       dotsC.push(c);
       continue;
     }
@@ -1246,6 +1315,8 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
       }
       continue;
     }
+    // a narrow tall curve (parenthesis around a courtesy accidental, stray bracket) is no rest
+    if (w < 1.1 * d && h >= 2.4 * d) continue;
     if (w <= 2.2 * d && h >= 1.2 * d && h <= 3.7 * d && (h >= 2.55 * d || w <= 1.7 * d)) {
       const kind: RestKind = h >= 2.55 * d ? 'quarter' : 'eighth';
       rests.push({ kind, x0: c.x0 + rx0, x1: c.x1 + rx0, y0: c.y0 + ry0, y1: c.y1 + ry0, dots: 0 });
@@ -1286,8 +1357,8 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
     noteheads.forEach((nh, i) => {
       const dx = cx - (nh.cx - rx0);
       const dy = cy - (nh.cy - ry0);
-      if (dx < 0.6 * d || dx > 1.7 * d || Math.abs(dy) > 0.6 * d) return;
-      const cost = dx + Math.abs(dy);
+      if (dx < 0.6 * d || dx > 1.9 * d || Math.abs(dy) > 0.8 * d) return;
+      const cost = dx + 2 * Math.abs(dy);
       if (cost < bc) {
         bc = cost;
         bi = i;
