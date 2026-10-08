@@ -847,15 +847,16 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
   const hh = (c: Comp) => c.y1 - c.y0 + 1;
   const ww = (c: Comp) => c.x1 - c.x0 + 1;
   const gImg: GImg = { w: W, h: H, d: clean.d };
-  const keyRead = readKeySignature(gImg, d, topL, botL, clefEnd);
+  // an unrecognised clef still sits between the staff start and the key signature: look further for the first accidental
+  const keyRead = readKeySignature(gImg, d, topL, botL, clefEnd, clefDetected ? 4.5 : 8);
   const keyFifths = keyRead.fifths;
   const keyEnd = keyFifths !== 0 ? keyRead.endX : clefEnd;
   /**
    * Read a time signature (stacked digits or C / cut C) whose glyphs start right of `keyEndX` and begin before `xMax`
    * (local x). Used for the prefix of the staff and for courtesy signatures after a double barline.
    */
-  const readTimeSig = (keyEndX: number, xMax: number, ignoreUsed: boolean): { timeSig?: { numerator: number; denominator: number }; unreadable: boolean; x1: number } => {
-    let timeSig: { numerator: number; denominator: number } | undefined;
+  const readTimeSig = (keyEndX: number, xMax: number, ignoreUsed: boolean): { timeSig?: { numerator: number; denominator: number; fromSign?: boolean }; unreadable: boolean; x1: number } => {
+    let timeSig: { numerator: number; denominator: number; fromSign?: boolean } | undefined;
     let timeSigUnreadable = false;
     const timeComps = new Set<number>();
     const winA = keyEndX + 0.1 * d;
@@ -967,7 +968,8 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
           } else run = 0;
         }
       }
-      timeSig = h >= 2.6 * d && midRun >= 0.85 * h ? { numerator: 2, denominator: 2 } : { numerator: 4, denominator: 4 };
+      // fromSign: read from a C / cut-C glyph (not stacked digits), so it is trusted over the bar-length inference
+      timeSig = h >= 2.6 * d && midRun >= 0.85 * h ? { numerator: 2, denominator: 2, fromSign: true } : { numerator: 4, denominator: 4, fromSign: true };
     } else if (stackX === Infinity && pre.length > 0 && (() => {
       // A common-time C that staff-line removal cut into pieces (left arc + terminals): judge the cluster as a whole.
       // It must be one glyph ~1-2 d wide and ~2-2.8 d tall centred on the middle line, with a tall left arc and an
@@ -1003,7 +1005,7 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
       return true;
     })()) {
       for (const id of fragIds) timeComps.add(id);
-      timeSig = { numerator: 4, denominator: 4 };
+      timeSig = { numerator: 4, denominator: 4, fromSign: true };
     } else if (stackX < Infinity) {
       const read = (row: Comp[]): number => {
         let n = 0;
@@ -1024,7 +1026,7 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
       const touchesLine = topRow.some((c) => c.y0 <= topL + 0.25 * d) || botRow.some((c) => c.y1 >= botL - 0.25 * d);
       const holeNumeral = num === 6 || num === 8 || num === 9 || num === 0;
       if (touchesLine && holeNumeral && topRow.length === 1) timeSigUnreadable = true;
-      else if (num >= 1 && num <= 32 && [1, 2, 4, 8, 16, 32].includes(den)) timeSig = { numerator: num, denominator: den };
+      else if (num >= 1 && num <= 32 && [2, 4, 8, 16, 32].includes(den)) timeSig = { numerator: num, denominator: den };
       else timeSigUnreadable = true;
     }
       let x1 = keyEndX;
@@ -1455,7 +1457,7 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
     const filled = stemHeads[sid].filter((hi) => !heads1[hi].hollow);
     if (filled.length === 0) return;
     const dy = Math.min(...filled.map((hi) => Math.abs(heads1[hi].cy - h.cy)));
-    if (dy > 1.2 * d) dropHead.add(i);
+    if (dy > 0.7 * d) dropHead.add(i);
   });
 
   const rescued = new Set<number>();
@@ -1478,9 +1480,38 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
     const pc = h.comp > 0 ? comps[h.comp - 1] : undefined;
     // narrow rings, or rings that are part of a tall glyph (quarter-rest zig-zag), are not whole notes
     const tall = !!pc && pc.y1 - pc.y0 + 1 > 1.9 * d;
-    if ((h.outerW ?? Infinity) < 1.3 * d || tall) {
+    // the loop of an eighth / sixteenth rest: a ring with a small (< 0.43 d) hole, much tighter than a whole note's (~0.5 d)
+    // ... and an eighth rest's thin diagonal tail runs on below the loop (>= 0.7 d of rows with ink under it); a whole note has none
+    const restLoop =
+      (h.holeHW ?? Infinity) < 0.43 * d &&
+      (h.outerW ?? Infinity) < 1.65 * d &&
+      (() => {
+        let rows = 0;
+        for (let y = Math.round(h.cy + 0.5 * d); y <= Math.round(h.cy + 1.9 * d); y++) {
+          if (y < 0 || y >= H) continue;
+          let any = false;
+          for (let x = Math.max(0, Math.round(h.cx - 1.2 * d)); x <= Math.min(W - 1, Math.round(h.cx + 0.8 * d)) && !any; x++) if (clean.d[y * W + x]) any = true;
+          if (any) rows++;
+        }
+        return rows >= 0.7 * d;
+      })();
+    // the gap between the two strokes of a double / final barline reads as a ring: barline strokes close to both sides
+    // the gap between the two strokes of a double / final barline reads as a ring: tall vertical ink (>= 2.5 d of rows) on BOTH
+    // sides of the hole, where a notehead's walls are only about a staff space tall
+    const betweenBars = (() => {
+      if (h.outerW === undefined || h.holeHW === undefined || h.holeHW < 0.7 * d) return false;
+      const xl = Math.round(h.cx - h.outerW / 2 + 1);
+      const xr = Math.round(h.cx + h.outerW / 2 - 1);
+      let rows = 0;
+      for (let y = Math.round(h.cy - 2.5 * d); y <= Math.round(h.cy + 2.5 * d); y++) {
+        if (y < 0 || y >= H) continue;
+        if (clean.d[y * W + xl] && clean.d[y * W + xr]) rows++;
+      }
+      return rows >= 2.5 * d;
+    })();
+    if ((h.outerW ?? Infinity) < 1.3 * d || tall || restLoop || betweenBars) {
       dropHead.add(i);
-      if (tall) rescued.add(h.comp);
+      if ((tall || restLoop) && h.comp > 0) rescued.add(h.comp);
     }
   });
   // a hollow "head" in the middle of a long stroke (a flat sign's loop) has stem on both sides; a real head sits at a stem end
@@ -1671,7 +1702,7 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
       dotsC.push(c);
       continue;
     }
-    if (w >= 1.2 * d && h <= 1.4 * d && fill <= 0.65 && h >= 0.2 * d) {
+    if (w >= 1.2 * d && h <= 1.4 * d && fill <= 0.65 && h >= 0.2 * d && !(rescued.has(c.id) && h >= 0.95 * d)) {
       ties.push(c);
       continue;
     }
@@ -1696,7 +1727,7 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
     if (w < 1.1 * d && h >= 2.4 * d && c.area / h < 0.3 * d) continue;
     // thin vertical bits (the stems of a natural sign, a dynamic hairpin end) are never a rest
     if (w < 0.5 * d) continue;
-    if (w <= 2.2 * d && h >= 1.2 * d && h <= 3.7 * d && (h >= 2.55 * d || w <= 1.7 * d)) {
+    if (w <= 2.2 * d && h >= (rescued.has(c.id) ? 1.0 : 1.2) * d && h <= 3.7 * d && (h >= 2.55 * d || w <= 1.7 * d)) {
       // quarter rest: ~3 d tall zigzag, mass all the way down (curl at the bottom). Eighth rest: ~1.8-2.1 d, a round
       // blob at the top and a thin diagonal stem below, so the lower half is only ~0.15 d of ink per row. The height
       // alone is not enough: line removal shortens a quarter rest to ~2.2 d, hence the lower-half test.
@@ -1850,13 +1881,14 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
       }
     }
     const tr = readTimeSig(keyEndX, Math.min(winEnd, keyEndX + 3.4 * d), true);
-    if (fifths === undefined && !tr.timeSig) return;
+    if (fifths === undefined && !tr.timeSig && !tr.unreadable) return;
     let x1 = keyEndX;
     x1 = Math.max(x1, tr.x1);
     // x0 starts right behind the barline (a flat's bulb can sit left of the first stem the key reader found)
     const sc: (typeof signatureChanges)[number] = { barline: k, x0: bx + 0.2 * d, x1: x1 + rx0 };
     if (fifths !== undefined) sc.keyFifths = fifths;
     if (tr.timeSig) sc.timeSig = tr.timeSig;
+    else if (tr.unreadable) sc.unreadable = true;
     signatureChanges.push(sc);
   });
   if (signatureChanges.length) {

@@ -1,5 +1,6 @@
-import { lazy, Suspense } from 'react';
-import { useStore } from './store';
+import { lazy, Suspense, useEffect } from 'react';
+import { startAutosave, useStore } from './store';
+import Library from './ui/Library';
 import './ui/ui.css';
 import TopBar from './ui/TopBar';
 import Transport from './ui/Transport';
@@ -15,6 +16,11 @@ const NotationView = lazy(() => import('./ui/NotationView'));
 
 export default function App() {
   useKeyboard();
+  useEffect(() => {
+    const stop = startAutosave();
+    void useStore.getState().restoreLastTab();
+    return stop;
+  }, []);
   const score = useStore((s) => s.score);
   const view = useStore((s) => s.view);
   const hasSource = !!score?.meta.sourcePages?.length;
@@ -46,6 +52,7 @@ export default function App() {
       </main>
       <Transport />
       <Settings />
+      <Library />
     </div>
   );
 }

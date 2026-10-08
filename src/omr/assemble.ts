@@ -1,4 +1,4 @@
-import { createEmptyScore, newNoteId, type Note, type Score, type Track } from '../core';
+import { createEmptyScore, newNoteId, pulseTicks, type Note, type Score, type Track } from '../core';
 import { preprocess, toOriginal } from './preprocess';
 import { detectStaves, lineY } from './staves';
 import { analyzeStaff } from './symbols';
@@ -462,11 +462,19 @@ export function assembleScore(pages: PageResult[], ppq = 480, opts: { instrument
       pageWarned.ts.add(si.page.index);
       warnings.push(`Page ${si.page.index + 1}: a time signature could not be read; assumed 4/4.`);
     }
+    // a signature that is present but unreadable (also mid-staff after a double barline): its glyphs were kept out of the
+    // notes, but the user should check the meter there
+    if (!pageWarned.ts.has(si.page.index) && (syms.some((x) => x.timeSigUnreadable) || si.changes.some((c) => c.unreadable))) {
+      pageWarned.ts.add(si.page.index);
+      warnings.push(`Page ${si.page.index + 1}: a time signature could not be read; its glyphs were ignored and the current meter (${curTs.numerator}/${curTs.denominator}) was kept. Check the meter.`);
+    }
     // Meter inference runs for every system. With no printed signature it fills the gap (a looser 2-bar rule applies);
     // a signature read from digits (not a common / cut-time C, which are reliable) is overridden when the bars
     // consistently add up to a different meter.
     {
-      const printedDigits = !!ts && !(ts.numerator === 4 && ts.denominator === 4) && !(ts.numerator === 2 && ts.denominator === 2);
+      // 4/4 is the default meter (never overridden); 2/2 is trusted only when it came from a printed cut-time sign, a "2 over 2" read
+      // from digits can be a mis-read and is overridable like any other
+      const printedDigits = !!ts && !ts.fromSign && !(ts.numerator === 4 && ts.denominator === 4);
       const inferred = inferMeter(sysInfos, sIdx, explicitTsSys, ppq, curTs, measureNo === 0, !ts);
       if (inferred && !ts) {
         setTs(inferred.ts);
@@ -622,7 +630,8 @@ export function assembleScore(pages: PageResult[], ppq = 480, opts: { instrument
       }
       for (const { label, frac } of si.chords.get(m) ?? []) {
         // snap to the nearest beat of the measure (beats of the time signature's denominator unit)
-        const beat = (ppq * 4) / curTs.denominator;
+        // (never coarser than a quarter note: in cut time / 2/2 a chord on beat 2 of a quarter pulse must not be moved to a half-note boundary)
+        const beat = pulseTicks(ppq, curTs.denominator);
         const nBeats = Math.max(1, Math.round(nominal / beat));
         const tick = start + Math.min(nBeats - 1, Math.max(0, Math.round(frac * nBeats))) * beat;
         const prev = chordList[chordList.length - 1];

@@ -362,10 +362,10 @@ export interface KeyRead {
  * Read a key signature from the staff-line-free image. Accidentals are located through their vertical strokes:
  *  flat  = single stroke with a bulb on the lower right and nothing to its left / upper right
  *  sharp = pair of strokes < 0.75 staff spaces apart
- * Sequence rules: first glyph within 4.5 spaces of the clef, later glyphs within 2.6 spaces of their predecessor,
+ * Sequence rules: first glyph within 4.5 spaces of the clef (`firstGapMax` spaces when the clef was not recognised), later glyphs within 2.6 spaces of their predecessor,
  * all of the same kind, at most 7.
  */
-export function readKeySignature(img: GImg, d: number, topL: number, botL: number, startX: number): KeyRead {
+export function readKeySignature(img: GImg, d: number, topL: number, botL: number, startX: number, firstGapMax = 4.5): KeyRead {
   const ya = Math.round(topL - 2.6 * d);
   const yb = Math.round(botL + 2.6 * d);
   const strokes = findStrokes(img, Math.round(startX), Math.round(startX + 22 * d), ya, yb, Math.round(2.0 * d), Math.max(3, Math.round(0.4 * d)));
@@ -396,7 +396,7 @@ export function readKeySignature(img: GImg, d: number, topL: number, botL: numbe
       continue;
     }
     const ref = glyphs.length ? glyphs[glyphs.length - 1].x0 : startX;
-    if (s.x0 - ref > (glyphs.length ? 2.6 : 4.5) * d) break;
+    if (s.x0 - ref > (glyphs.length ? 2.6 : firstGapMax) * d) break;
     const len = s.bot - s.top + 1;
     const nxt = strokes[i + 1];
     let g: G | null = null;
@@ -419,6 +419,8 @@ export function readKeySignature(img: GImg, d: number, topL: number, botL: numbe
     if (glyphs.length >= 7) break;
   }
   if (glyphs.length === 0) return { fifths: 0, endX: startX };
+  // a first accidental beyond the normal clef distance (an unrecognised clef sits in between) is only believed as a run of >= 2
+  if (glyphs[0].x0 - startX > 4.5 * d && glyphs.length < 2) return { fifths: 0, endX: startX };
   const endX = prevEnd;
   const n = glyphs.length;
   return { fifths: glyphs[0].kind === 'flat' ? -n : n, endX };

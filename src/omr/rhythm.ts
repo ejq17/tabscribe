@@ -132,8 +132,10 @@ export function quantizeTicks(v: number, grid: number): number {
 /** A key / time-signature change found on a staff; it applies from output measure index `measure` (== length when trailing). */
 export interface SigChange {
   measure: number;
-  timeSig?: { numerator: number; denominator: number };
+  timeSig?: { numerator: number; denominator: number; fromSign?: boolean };
   keyFifths?: number;
+  /** a time signature glyph was found here but could not be read (its glyphs are not notes) */
+  unreadable?: boolean;
 }
 
 export interface StaffLayoutResult {
@@ -226,9 +228,9 @@ export function staffLayout(sym: StaffSymbols, stems: StemInfo[], d: number, ppq
   }
   const changes: SigChange[] = [];
   for (const c of sigs) {
-    if (!c.timeSig && c.keyFifths === undefined) continue;
+    if (!c.timeSig && c.keyFifths === undefined && !c.unreadable) continue;
     const m = outStart[c.barline + 1] ?? out.length;
-    changes.push({ measure: m, timeSig: c.timeSig, keyFifths: c.keyFifths });
+    changes.push({ measure: m, timeSig: c.timeSig, keyFifths: c.keyFifths, ...(c.unreadable ? { unreadable: true } : {}) });
   }
   return { measures: out, slash, changes, trailingCourtesy };
 }

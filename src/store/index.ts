@@ -12,6 +12,7 @@ import {
 import { importFile } from '../importers';
 import { assignTab } from '../tab';
 import { detectChords, mergeOmrChords, type ChordEvent } from '../chords';
+import * as lib from './library';
 import { applyPatch, fretOn, guitarNotes, mapGuitarNotes, type NotePatch } from './ops';
 
 export { fretOn, playableStrings, sortedNotes, guitarNotes } from './ops';
@@ -50,8 +51,14 @@ export interface SettingsState {
   playChords: boolean;
 }
 
+export type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
+
 export interface AppState {
   score: Score | null;
+  /** Library entry the open score autosaves to (null = not in the library) */
+  libraryId: string | null;
+  libraryName: string;
+  saveStatus: SaveStatus;
   guitar: GuitarConfig;
   chords: ChordEvent[];
   selection: NoteId[];
@@ -64,7 +71,17 @@ export interface AppState {
   status: StatusState;
 
   loadFile: (file: File) => Promise<void>;
-  loadScore: (score: Score) => void;
+  loadScore: (score: Score, opts?: { libraryId?: string | null; libraryName?: string }) => void;
+  /** Save the open score under a new library entry (becomes the autosave target). */
+  saveAs: (name: string) => Promise<void>;
+  renameCurrent: (name: string) => Promise<void>;
+  openFromLibrary: (id: string) => Promise<boolean>;
+  /** Reopen the tab that was open last session. */
+  restoreLastTab: () => Promise<boolean>;
+  /** Write the open score to its library entry now. */
+  saveNow: () => Promise<void>;
+  /** Forget the current library link (e.g. after the entry was deleted). */
+  detachLibrary: () => void;
   setGuitar: (partial: Partial<GuitarConfig>) => void;
   updateNote: (id: NoteId, patch: NotePatch) => void;
   /** Apply a patch (or per-note patch function) to many notes as ONE undo step. */
@@ -92,6 +109,7 @@ interface Prefs {
   guitar?: GuitarConfig;
   view?: Partial<ViewState>;
   settings?: Partial<SettingsState>;
+  libraryId?: string | null;
 }
 
 function readPrefs(): Prefs {
@@ -104,7 +122,7 @@ function readPrefs(): Prefs {
 }
 function writePrefs(p: Prefs) {
   try {
-    if (typeof localStorage !== 'undefined') localStorage.setItem(LS_KEY, JSON.stringify(p));
+    if (typeof localStorage !== 'undefined') localStorage.setItem(LS_KEY, JSON.stringify({ ...readPrefs(), ...p }));
   } catch {
     /* ignore */
   }
@@ -139,6 +157,16 @@ function safeChords(score: Score, resolution: ChordResolution): ChordEvent[] {
   }
 }
 
+function chordPreview(chords: ChordEvent[]): string | undefined {
+  const names: string[] = [];
+  for (const c of chords) {
+    const n = (c as { name?: string }).name;
+    if (n && names[names.length - 1] !== n) names.push(n);
+    if (names.length >= 5) break;
+  }
+  return names.length ? names.join(' ') : undefined;
+}
+
 export const useStore = create<AppState>()((set, get) => {
   /** Recompute tab + chords for a freshly mutated score; optionally push history. */
   const commit = (next: Score, pushHistory = true, extra: Partial<AppState> = {}) => {
@@ -151,6 +179,9 @@ export const useStore = create<AppState>()((set, get) => {
 
   return {
     score: null,
+    libraryId: null,
+    libraryName: '',
+    saveStatus: 'idle',
     guitar: prefs.guitar?.tuning?.pitches?.length ? { ...DEFAULT_GUITAR, ...prefs.guitar } : DEFAULT_GUITAR,
     chords: [],
     selection: [],
@@ -174,12 +205,18 @@ export const useStore = create<AppState>()((set, get) => {
         if (!score.meta.title) score.meta.title = file.name.replace(/\.[^.]+$/, '');
         get().loadScore(score);
         set({ status: { busy: false } });
+        if (lib.libraryAvailable()) {
+          // Autosave every new import straight away so nothing is lost on reload.
+          const isProject = /\.json$/i.test(file.name);
+          const name = isProject ? score.meta.title || file.name : `Untitled – ${file.name}`;
+          await get().saveAs(name);
+        }
       } catch (e) {
         set({ status: { busy: false, error: e instanceof Error ? e.message : String(e) } });
       }
     },
 
-    loadScore(score) {
+    loadScore(score, opts) {
       const { settings } = get();
       let guitar = get().guitar;
       // Guitar Pro / MusicXML files carry their own tuning and capo; adopt them so the file's fingering is valid.
@@ -200,7 +237,75 @@ export const useStore = create<AppState>()((set, get) => {
         history: { past: [], future: [] },
         playback: { ...get().playback, isPlaying: false, tick: 0, loop: undefined },
         view: { ...get().view, showSource: !!assigned.meta.sourcePages?.length },
+        libraryId: opts?.libraryId ?? null,
+        libraryName: opts?.libraryName ?? '',
+        saveStatus: opts?.libraryId ? 'saved' : 'idle',
       });
+      writePrefs({ libraryId: opts?.libraryId ?? null });
+    },
+
+    async saveAs(name) {
+      const { score, chords } = get();
+      if (!score || !lib.libraryAvailable()) return;
+      const id = lib.newLibraryId();
+      set({ saveStatus: 'saving' });
+      try {
+        const thumbnail = await lib.makeThumbnail(score);
+        await lib.saveEntry({ id, name, score, thumbnail, preview: chordPreview(chords) });
+        // Only link if the user hasn't opened something else while we were saving.
+        if (get().score === score) {
+          set({ libraryId: id, libraryName: name, saveStatus: 'saved' });
+          writePrefs({ libraryId: id });
+        }
+      } catch (e) {
+        console.warn('save failed', e);
+        set({ saveStatus: 'error' });
+      }
+    },
+
+    async renameCurrent(name) {
+      const { libraryId } = get();
+      if (!libraryId) return;
+      await lib.renameEntry(libraryId, name);
+      set({ libraryName: name });
+    },
+
+    async saveNow() {
+      const { score, libraryId, libraryName, chords } = get();
+      if (!score || !libraryId) return;
+      set({ saveStatus: 'saving' });
+      try {
+        await lib.saveEntry({ id: libraryId, name: libraryName, score, preview: chordPreview(chords) });
+        if (get().libraryId === libraryId) set({ saveStatus: get().score === score ? 'saved' : 'saving' });
+      } catch (e) {
+        console.warn('save failed', e);
+        set({ saveStatus: 'error' });
+      }
+    },
+
+    async openFromLibrary(id) {
+      if (!lib.libraryAvailable()) return false;
+      try {
+        const e = await lib.getEntry(id);
+        if (!e) return false;
+        await flushAutosave();
+        get().loadScore(e.score, { libraryId: e.id, libraryName: e.name });
+        return true;
+      } catch (err) {
+        console.warn('open failed', err);
+        return false;
+      }
+    },
+
+    async restoreLastTab() {
+      const id = readPrefs().libraryId;
+      if (!id || get().score) return false;
+      return get().openFromLibrary(id);
+    },
+
+    detachLibrary() {
+      set({ libraryId: null, libraryName: '', saveStatus: 'idle' });
+      writePrefs({ libraryId: null });
     },
 
     setGuitar(partial) {
@@ -361,3 +466,40 @@ export const useStore = create<AppState>()((set, get) => {
     },
   };
 });
+
+// ---------------------------------------------------------------------------
+// Autosave: debounce edits to the open score and write them to its library entry.
+// ---------------------------------------------------------------------------
+let autosaveTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Flush a pending debounced save immediately. */
+export async function flushAutosave(): Promise<void> {
+  if (autosaveTimer) {
+    clearTimeout(autosaveTimer);
+    autosaveTimer = null;
+    await useStore.getState().saveNow();
+  }
+}
+
+/** Start watching the store. Returns an unsubscribe function. Safe to call once at app start. */
+export function startAutosave(delayMs = 1000): () => void {
+  const unsub = useStore.subscribe((state, prev) => {
+    if (!state.libraryId || state.libraryId !== prev.libraryId || state.score === prev.score || !state.score) return;
+    if (autosaveTimer) clearTimeout(autosaveTimer);
+    useStore.setState({ saveStatus: 'saving' });
+    autosaveTimer = setTimeout(() => {
+      autosaveTimer = null;
+      void useStore.getState().saveNow();
+    }, delayMs);
+  });
+  const onHide = () => {
+    if (document.visibilityState === 'hidden') void flushAutosave();
+  };
+  if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onHide);
+  return () => {
+    unsub();
+    if (autosaveTimer) clearTimeout(autosaveTimer);
+    autosaveTimer = null;
+    if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onHide);
+  };
+}

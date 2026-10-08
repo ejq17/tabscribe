@@ -353,6 +353,25 @@ function findExtent(b: Binary, lines: number[], d: number, slope = 0, xRef = 0):
   return { left: bestL, right: bestR };
 }
 
+/**
+ * A chord-diagram fret grid is five horizontal rules crossed by a vertical "string" about every staff space. A staff has a
+ * full-height vertical (a barline) only every few spaces. Count the columns that are inked in all four spaces between the
+ * lines: more than one run of them per 2.5 spaces of width means a grid.
+ */
+function looksLikeFretGrid(b: Binary, ys: number[], left: number, right: number, d: number): boolean {
+  const { width, height, data } = b;
+  const mids = [0, 1, 2, 3].map((i) => Math.round((ys[i] + ys[i + 1]) / 2));
+  if (mids[0] < 0 || mids[3] >= height) return false;
+  let runs = 0;
+  let inRun = false;
+  for (let x = Math.max(0, Math.floor(left)); x <= Math.min(width - 1, Math.ceil(right)); x++) {
+    const full = mids.every((y) => data[y * width + x] || data[y * width + Math.max(0, x - 1)] || data[y * width + Math.min(width - 1, x + 1)]);
+    if (full && !inRun) runs++;
+    inRun = full;
+  }
+  return runs > (right - left) / (2.5 * d);
+}
+
 /** Detect staves (5 equally spaced lines) in a binary page. */
 export function detectStaves(b: Binary): Staff[] {
   const m = estimateStaffMetrics(b);
@@ -403,6 +422,9 @@ export function detectStaves(b: Binary): Staff[] {
     if (Math.abs(pitch - d) > tol) continue;
     const ext = findExtent(b, ys, d, slope, xRef);
     if (!ext) continue;
+    // five short horizontal rules are a chord-diagram fret grid / table, not a staff: a staff runs at least ~14 spaces
+    if (ext.right - ext.left < 14 * d) continue;
+    if (looksLikeFretGrid(b, ys, ext.left, ext.right, d)) continue;
     chain.forEach((k) => (used[k] = true));
     const bands = sampleBands(b, ys, ext.left, ext.right, d, slope, xRef);
     const mean = [0, 1, 2, 3, 4].map((li) => bands.reduce((s, bd2) => s + bd2.ys[li], 0) / bands.length);

@@ -108,7 +108,7 @@ export interface StaffSymbols {
   clef: ClefKind;
   clefDetected: boolean;
   keyFifths: number;
-  timeSig?: { numerator: number; denominator: number };
+  timeSig?: { numerator: number; denominator: number; fromSign?: boolean };
   musicStart: number;
   heads: Notehead[];
   stems: StemInfo[];
@@ -140,7 +140,7 @@ export interface StaffSymbols {
    * measure (for the last barline: from the first measure of the next system). `x0..x1` is the glyph extent, so
    * rhythm.ts can discard any rest / dot fragments the glyphs left behind. Filled by the symbol layer (optional).
    */
-  signatureChanges?: { barline: number; x0: number; x1: number; timeSig?: { numerator: number; denominator: number }; keyFifths?: number }[];
+  signatureChanges?: { barline: number; x0: number; x1: number; timeSig?: { numerator: number; denominator: number; fromSign?: boolean }; keyFifths?: number; unreadable?: boolean }[];
 }
 
 export interface PageResult {

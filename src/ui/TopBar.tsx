@@ -1,4 +1,5 @@
 import { useRef } from 'react';
+import { keyName, keySignatureAt, tempoAt, timeSignatureAt, type KeySignature } from '../core';
 import { useStore } from '../store';
 import ExportMenu from './ExportMenu';
 import { ACCEPT, useOpenFile } from './FileDrop';
@@ -12,6 +13,43 @@ function Toggle({ on, onClick, children, label }: { on: boolean; onClick: () => 
   );
 }
 
+function keyLabel(score: { keySignatures: KeySignature[] }, tick: number): string {
+  if (!score.keySignatures.length) return '–';
+  const k = keySignatureAt(score as never, tick);
+  const rel: KeySignature = { ...k, mode: k.mode === 'minor' ? 'major' : 'minor' };
+  return `${keyName(k)} / ${keyName(rel)}`;
+}
+
+/** Key, time signature and tempo at the playhead. */
+function KeyInfo() {
+  const info = useStore((s) => {
+    if (!s.score) return '';
+    const t = s.playback.tick;
+    const ts = timeSignatureAt(s.score, t);
+    return `${keyLabel(s.score, t)}|${ts.numerator}/${ts.denominator}|${Math.round(tempoAt(s.score, t).bpm)}`;
+  });
+  if (!info) return null;
+  const [key, ts, bpm] = info.split('|');
+  return (
+    <span className="key-info" aria-label="Key, time signature and tempo">
+      <span className="key-name" title="Key at the playhead">Key: {key}</span>
+      <span className="muted">{ts} · ♩={bpm}</span>
+    </span>
+  );
+}
+
+function SaveIndicator() {
+  const st = useStore((s) => s.saveStatus);
+  const linked = useStore((s) => !!s.libraryId);
+  if (!linked) return null;
+  const text = st === 'saving' ? 'Saving…' : st === 'error' ? 'Save failed' : 'Saved';
+  return (
+    <span className={`save-ind ${st}`} role="status" aria-live="polite">
+      {text}
+    </span>
+  );
+}
+
 export default function TopBar() {
   const open = useOpenFile();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -22,6 +60,7 @@ export default function TopBar() {
   const canRedo = useStore((s) => s.history.future.length > 0);
   const undo = useStore((s) => s.undo);
   const redo = useStore((s) => s.redo);
+  const libraryName = useStore((s) => s.libraryName);
   const busy = useStore((s) => s.status.busy);
   const hasSource = !!score?.meta.sourcePages?.length;
 
@@ -66,8 +105,11 @@ export default function TopBar() {
         </>
       )}
       <div className="tb-spacer" />
-      {score?.meta.title && <span className="doc-title" title={score.meta.title}>{score.meta.title}</span>}
+      {score && <KeyInfo />}
+      {score && (libraryName || score.meta.title) && <span className="doc-title" title={libraryName || score.meta.title}>{libraryName || score.meta.title}</span>}
+      <SaveIndicator />
       <div className="tb-group">
+        <button className="btn" onClick={() => useUi.getState().setLibraryOpen(true)} aria-label="Library">Library</button>
         <ExportMenu />
         <button className="btn" onClick={() => useUi.getState().setSettingsOpen(true)} aria-label="Settings">⚙ Settings</button>
       </div>

@@ -173,6 +173,15 @@ export function scoreLength(score: Score): number {
   return end;
 }
 
+/**
+ * Ticks of one practice / strumming pulse in a time signature: the denominator unit, but never coarser than a quarter
+ * note. Cut time (2/2) is felt in two, yet a guitarist counts, strums and clicks the quarter pulse; a half-note grid
+ * halves the chord cells / metronome clicks and mis-places chords on beat 2 and 4.
+ */
+export function pulseTicks(ppq: number, denominator: number): number {
+  return Math.min(ppq, (ppq * 4) / denominator);
+}
+
 /** Ticks per measure at a given tick. */
 export function ticksPerMeasure(score: Score, tick: number): number {
   const ts = timeSignatureAt(score, tick);

@@ -3,6 +3,7 @@ import { importMidi } from './midi';
 import { importMusicXml, readMusicXmlText } from './musicxml';
 import { importAbc } from './abc';
 import { importGuitarPro } from './guitarpro';
+import { importProject, looksLikeProject } from './project';
 import { addWarning, baseName, decodeUtf8, extOf } from './util';
 import { unzipSync } from 'fflate';
 
@@ -14,20 +15,22 @@ export interface ImportOptions {
   instrument?: 'guitar' | 'concert';
 }
 
+export { exportProject, importProject, PROJECT_VERSION } from './project';
 export { importMidi, importMusicXml, importAbc, importGuitarPro };
 export { decompressBcfz, readBcfs, parseGpif, parseGuitarPro345 } from './guitarpro';
 
 export const SUPPORTED_EXTENSIONS = [
   'mid', 'midi', 'xml', 'musicxml', 'mxl', 'abc', 'gp3', 'gp4', 'gp5', 'gpx', 'gp',
-  'pdf', 'png', 'jpg', 'jpeg', 'webp', 'mp3', 'wav', 'm4a', 'ogg', 'flac',
+  'json', 'pdf', 'png', 'jpg', 'jpeg', 'webp', 'mp3', 'wav', 'm4a', 'ogg', 'flac',
 ];
 
-export type FileKind = 'midi' | 'musicxml' | 'abc' | 'guitarpro' | 'pdf' | 'image' | 'audio' | 'unknown';
+export type FileKind = 'midi' | 'musicxml' | 'abc' | 'guitarpro' | 'pdf' | 'image' | 'audio' | 'project' | 'unknown';
 
 const EXT_KIND: Record<string, FileKind> = {
   mid: 'midi', midi: 'midi', kar: 'midi',
   xml: 'musicxml', musicxml: 'musicxml', mxl: 'musicxml',
   abc: 'abc',
+  json: 'project',
   gp3: 'guitarpro', gp4: 'guitarpro', gp5: 'guitarpro', gpx: 'guitarpro', gp: 'guitarpro',
   pdf: 'pdf',
   png: 'image', jpg: 'image', jpeg: 'image', webp: 'image',
@@ -43,6 +46,7 @@ const startsAscii = (b: Uint8Array, s: string, at = 0) => {
 export function detectKind(filename: string, head: Uint8Array): FileKind {
   const byExt = EXT_KIND[extOf(filename)];
   if (byExt) return byExt;
+  if (looksLikeProject(decodeUtf8(head.subarray(0, 512)))) return 'project';
   if (startsAscii(head, 'MThd')) return 'midi';
   if (startsAscii(head, '%PDF')) return 'pdf';
   if (startsAscii(head, 'BCFZ') || startsAscii(head, 'BCFS')) return 'guitarpro';
@@ -79,6 +83,14 @@ export async function importFile(file: File, opts: ImportOptions = {}): Promise<
   const kind = detectKind(name, extOf(name) in EXT_KIND ? bytes.subarray(0, 4) : bytes);
   let score: Score;
   switch (kind) {
+    case 'project': {
+      progress('Opening tab file', 0.3);
+      const p = importProject(decodeUtf8(bytes));
+      score = p.score;
+      if (p.name && !score.meta.title) score.meta.title = p.name;
+      progress('Done', 1);
+      return score;
+    }
     case 'midi':
       progress('Parsing MIDI', 0.3);
       score = importMidi(buf);

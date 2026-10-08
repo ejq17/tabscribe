@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { exportMidi, exportMusicXml, downloadBlob } from '../export';
+import { exportProject } from '../importers';
 import { toAsciiTab } from '../tab';
 import { useStore } from '../store';
 
@@ -56,6 +57,9 @@ export default function ExportMenu() {
           </button>
           <button role="menuitem" onClick={() => run(() => downloadBlob(toAsciiTab(score!, guitar, { chords }), `${base}.txt`, 'text/plain'))}>
             ASCII tab (.txt)
+          </button>
+          <button role="menuitem" onClick={() => run(() => downloadBlob(exportProject(score!, score!.meta.title), `${base}.tabscribe.json`, 'application/json'))}>
+            Save tab file (.tabscribe.json)
           </button>
           <button role="menuitem" onClick={() => run(() => window.print())}>
             Print / PDF…
