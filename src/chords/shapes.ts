@@ -1,6 +1,7 @@
 import { STANDARD_TUNING, pitchClass } from '../core';
 import type { Tuning, TabPosition } from '../core';
 import { CHORD_TEMPLATES } from './detect';
+import { chordIntervals } from './quality';
 
 /**
  * ChordDiagram. `frets` are ABSOLUTE fret numbers from the nut (like TabPosition),
@@ -24,12 +25,13 @@ const QUALITY_ALIASES: Record<string, string> = {
 };
 
 export function parseChordName(name: string): ParsedChord | null {
-  const m = /^([A-G])([#b]?)([^/]*)(?:\/([A-G][#b]?))?$/.exec(name.trim());
+  const m = /^([A-G])([#b]?)([^/]*)(?:\/([A-G][#b]?))?$/.exec(name.trim().replace(/6\/9/g, '69'));
   if (!m) return null;
   let root = ROOTS[m[1]];
   if (m[2] === '#') root += 1; else if (m[2] === 'b') root -= 1;
   root = pitchClass(root);
-  const q = QUALITY_ALIASES[m[3]];
+  // alias first (so standard open shapes are still found), then any quality the compositional parser understands
+  const q = QUALITY_ALIASES[m[3]] ?? (chordIntervals(m[3]) ? m[3] : undefined);
   if (q === undefined) return null;
   let bass: number | null = null;
   if (m[4]) {
@@ -165,12 +167,20 @@ function lookupStandard(p: ParsedChord, name: string): ChordDiagram | null {
 
 /** Search for a playable voicing in any tuning. */
 function searchVoicing(p: ParsedChord, tuning: Tuning, name: string): ChordDiagram | null {
-  const ivs = CHORD_TEMPLATES[p.quality];
-  if (!ivs) return null;
-  const tones = new Set(ivs.map((i) => (p.root + i) % 12));
-  const fifth = (p.root + 7) % 12;
-  const required = new Set(tones);
-  if (ivs.length >= 4 && ivs.includes(7)) required.delete(fifth);
+  const ci = chordIntervals(p.quality);
+  let tones: Set<number>;
+  let required: Set<number>;
+  if (ci) {
+    tones = new Set(ci.tones.map((i) => (p.root + i) % 12));
+    required = new Set(ci.required.map((i) => (p.root + i) % 12));
+  } else {
+    const ivs = CHORD_TEMPLATES[p.quality];
+    if (!ivs) return null;
+    tones = new Set(ivs.map((i) => (p.root + i) % 12));
+    const fifth = (p.root + 7) % 12;
+    required = new Set(tones);
+    if (ivs.length >= 4 && ivs.includes(7)) required.delete(fifth);
+  }
   const n = tuning.pitches.length; // index 0 = high
   const bassPc = p.bass ?? p.root;
   let best: { frets: number[]; score: number } | null = null;
@@ -233,7 +243,7 @@ function searchVoicing(p: ParsedChord, tuning: Tuning, name: string): ChordDiagr
  * extensions and alterations are dropped. Returns null when the root cannot be read.
  */
 export function simplifyChordName(name: string): string | null {
-  const m = /^([A-G][#b]?)([^/]*)(?:\/([A-G][#b]?))?$/.exec(name.trim());
+  const m = /^([A-G][#b]?)([^/]*)(?:\/([A-G][#b]?))?$/.exec(name.trim().replace(/6\/9/g, '69'));
   if (!m) return null;
   const [, root, q, bass] = m;
   if (!/^(?:maj|min|dim|aug|add|sus|alt|[mMΔ°ø+\-#b0-9()])*$/.test(q)) return null;

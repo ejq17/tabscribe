@@ -17,7 +17,7 @@ export interface ParseResult {
   confidence: number;
 }
 
-export type TextKind = 'chord' | 'rehearsal' | 'tempo' | 'unknown';
+export type TextKind = 'chord' | 'rehearsal' | 'tempo' | 'articulation' | 'unknown';
 
 const ROOT = /^([A-G])([b#]?)/;
 const BASS = /^\/([A-G])([b#]?)$/;

@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { createEmptyScore, newNoteId, STANDARD_TUNING, TUNINGS, spellingToMidi } from '../src/core';
 import type { Score, Tuning } from '../src/core';
 import { detectChords, chordDiagram, diagramFromVoicing, strumChart } from '../src/chords';
+import { chordIntervals } from '../src/chords/quality';
+import { chordVoicing } from '../src/audio/chordEvents';
 
 const PPQ = 480;
 /** One chord per measure (4/4). Each entry lists pitches lowest first. */
@@ -163,5 +165,100 @@ describe('strumChart', () => {
     expect(lines[0].cells[4].chord).toBe('Am');
     expect(lines[1].cells.length).toBe(4);
     expect(lines[1].cells[0].chord).toBe('C');
+  });
+});
+
+describe('chordIntervals', () => {
+  const cases: [string, number[], number[]][] = [
+    ['', [0, 4, 7], [0, 4, 7]],
+    ['m', [0, 3, 7], [0, 3, 7]],
+    ['5', [0, 7], [0, 7]],
+    ['sus4', [0, 5, 7], [0, 5, 7]],
+    ['sus2', [0, 2, 7], [0, 2, 7]],
+    ['7sus4', [0, 5, 7, 10], [0, 5, 10]],
+    ['9sus4', [0, 2, 5, 7, 10], [0, 2, 5, 10]],
+    ['maj9', [0, 2, 4, 7, 11], [0, 2, 4, 11]],
+    ['maj13', [0, 2, 4, 7, 9, 11], [0, 4, 9, 11]],
+    ['69', [0, 2, 4, 7, 9], [0, 2, 4, 9]],
+    ['6/9', [0, 2, 4, 7, 9], [0, 2, 4, 9]],
+    ['m69', [0, 2, 3, 7, 9], [0, 2, 3, 9]],
+    ['13', [0, 2, 4, 7, 9, 10], [0, 4, 9, 10]],
+    ['11', [0, 2, 4, 5, 7, 10], [0, 5, 10]],
+    ['m11', [0, 2, 3, 5, 7, 10], [0, 3, 5, 10]],
+    ['7b9', [0, 1, 4, 7, 10], [0, 1, 4, 10]],
+    ['7#9', [0, 3, 4, 7, 10], [0, 3, 4, 10]],
+    ['7b5', [0, 4, 6, 10], [0, 4, 6, 10]],
+    ['7#5', [0, 4, 8, 10], [0, 4, 8, 10]],
+    ['aug7', [0, 4, 8, 10], [0, 4, 8, 10]],
+    ['7#11', [0, 4, 6, 10], [0, 4, 6, 10]],
+    ['maj7#11', [0, 4, 6, 11], [0, 4, 6, 11]],
+    ['mmaj7', [0, 3, 7, 11], [0, 3, 11]],
+    ['add11', [0, 4, 5, 7], [0, 4, 5]],
+    ['add2', [0, 2, 4, 7], [0, 2, 4]],
+    ['madd9', [0, 2, 3, 7], [0, 2, 3]],
+    ['7alt', [0, 3, 4, 8, 10], [0, 3, 4, 8, 10]],
+    ['13b9', [0, 1, 4, 7, 9, 10], [0, 1, 4, 9, 10]],
+    ['7b13', [0, 4, 8, 10], [0, 4, 8, 10]],
+    ['Maj7', [0, 4, 7, 11], [0, 4, 11]],
+    ['mMaj7', [0, 3, 7, 11], [0, 3, 11]],
+    ['MAJ9', [0, 2, 4, 7, 11], [0, 2, 4, 11]],
+    ['maj6', [0, 4, 7, 9], [0, 4, 9]],
+    ['6', [0, 4, 7, 9], [0, 4, 9]],
+    ['9#11', [0, 2, 4, 6, 10], [0, 2, 4, 6, 10]],
+    ['m7b5', [0, 3, 6, 10], [0, 3, 6, 10]],
+    ['dim7', [0, 3, 6, 9], [0, 3, 6, 9]],
+    ['maj7#5', [0, 4, 8, 11], [0, 4, 8, 11]],
+    ['m(maj7)', [0, 3, 7, 11], [0, 3, 11]],
+    ['\u0394', [0, 4, 7], [0, 4, 7]],
+  ];
+  for (const [q, tones, required] of cases) {
+    it(`parses "${q}"`, () => {
+      expect(chordIntervals(q)).toEqual({ tones, required });
+    });
+  }
+  it('accepts alternate spellings', () => {
+    expect(chordIntervals('-\u03947')).toEqual(chordIntervals('mmaj7'));
+    expect(chordIntervals('\u00f8')).toEqual(chordIntervals('m7b5'));
+    expect(chordIntervals('+7')).toEqual(chordIntervals('aug7'));
+    expect(chordIntervals('7+')).toEqual(chordIntervals('7#5'));
+    expect(chordIntervals('M7')).toEqual(chordIntervals('maj7'));
+  });
+  it('returns null for non-qualities', () => {
+    expect(chordIntervals('foo')).toBeNull();
+    expect(chordIntervals('7x')).toBeNull();
+  });
+});
+
+describe('chordDiagram extended qualities', () => {
+  const QUALITIES = [
+    '7sus4', '9sus4', '7sus', 'maj9', 'maj13', '69', '13', '11', 'm11', 'm13', '7b9', '7#9', '7b5', '7#5', 'aug7', '7#11', 'maj7#11',
+    'mmaj7', 'add11', 'add2', 'madd9', '7alt', 'm69', '9#11', '13b9', '7b13', 'maj7#5', 'maj6', 'Maj7',
+  ];
+  const NAMES = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'];
+  for (const q of QUALITIES) {
+    it(`voices ${q} on every root`, () => {
+      const iv = chordIntervals(q)!;
+      expect(iv).not.toBeNull();
+      NAMES.forEach((nm, root) => {
+        const d = chordDiagram(nm + q, STANDARD_TUNING);
+        expect(d, nm + q).not.toBeNull();
+        const have = new Set<number>();
+        d!.frets.forEach((f, i) => { if (f >= 0) have.add((STANDARD_TUNING.pitches[i] + f) % 12); });
+        const tones = new Set(iv.tones.map((t) => (root + t) % 12));
+        for (const pc of have) expect(tones.has(pc), `${nm}${q} has stray pitch class ${pc}`).toBe(true);
+        for (const r of iv.required) expect(have.has((root + r) % 12), `${nm}${q} misses required ${r}`).toBe(true);
+      });
+    });
+  }
+  it('C6/9 and G6/9 keep their printed name and get a playback voicing', () => {
+    for (const nm of ['C6/9', 'G6/9']) {
+      const d = chordDiagram(nm, STANDARD_TUNING);
+      expect(d).not.toBeNull();
+      expect(d!.name).toBe(nm);
+      expect(chordVoicing(nm, STANDARD_TUNING)).not.toBeNull();
+    }
+  });
+  it('still rejects unreadable qualities', () => {
+    expect(chordDiagram('Cfoo', STANDARD_TUNING)).toBeNull();
   });
 });

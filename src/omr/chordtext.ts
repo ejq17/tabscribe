@@ -250,6 +250,65 @@ function findTextWordsBinary(b: Binary, staff: Staff, opts: FindOptions = {}): T
   return out;
 }
 
+/**
+ * True when a word's ink is an accent (">") or marcato ("^") chevron rather than a letter. Works on the bounding-box-tight
+ * bitmap with ~15% tolerance, in O(w*h). A printed "A" is told apart from "^" by its crossbar: some interior row below the apex (lower 60%) holds a
+ * horizontal run of at least half the width. Down-pointing "V" shapes are deliberately not matched (a printed V is a letter).
+ */
+export function looksLikeArticulation(word: TextWord): boolean {
+  const { w, h, ink } = word;
+  if (w < 4 || h < 3) return false;
+  const tx = Math.max(1, Math.round(0.15 * w)), ty = Math.max(1, Math.round(0.15 * h));
+  // per-row / per-column extents
+  const rowMin = new Int32Array(h).fill(w), rowMax = new Int32Array(h).fill(-1), rowRun = new Int32Array(h);
+  for (let y = 0; y < h; y++) {
+    let run = 0;
+    for (let x = 0; x < w; x++) {
+      if (ink[y * w + x]) {
+        if (x < rowMin[y]) rowMin[y] = x;
+        rowMax[y] = x;
+        if (++run > rowRun[y]) rowRun[y] = run;
+      } else run = 0;
+    }
+  }
+  const rowsNear = (lo: number, hi: number, pred: (y: number) => boolean) => { for (let y = lo; y <= hi; y++) if (pred(y)) return true; return false; };
+  // right-pointing accent ">"
+  {
+    let leftTop = -1, leftBot = -1, rightMin = h, rightMax = -1;
+    for (let y = 0; y < h; y++) {
+      if (rowMax[y] < 0) continue;
+      if (rowMin[y] <= 1) { if (leftTop < 0) leftTop = y; leftBot = y; }
+      if (rowMax[y] >= w - 2) { if (y < rightMin) rightMin = y; rightMax = y; }
+    }
+    if (leftTop >= 0 && leftTop <= ty && leftBot >= h - 1 - ty && leftBot - leftTop + 1 >= 0.6 * h && rightMax >= 0 &&
+        rightMin >= h / 3 - ty && rightMax <= (2 * h) / 3 + ty) {
+      const lim = 0.5 * w;
+      let topOk = true, botOk = true;
+      for (let y = 0; y <= Math.min(1, h - 1); y++) if (rowMax[y] >= lim) topOk = false;
+      for (let y = Math.max(0, h - 2); y < h; y++) if (rowMax[y] >= lim) botOk = false;
+      if (topOk && botOk) return true;
+    }
+  }
+  // up-pointing marcato "^"
+  {
+    const bottomLeft = rowsNear(h - 1 - ty, h - 1, (y) => rowMin[y] <= tx);
+    const bottomRight = rowsNear(h - 1 - ty, h - 1, (y) => rowMax[y] >= w - 1 - tx);
+    let topOk = true, anyTop = false;
+    for (let y = 0; y <= Math.min(1, h - 1); y++) {
+      if (rowMax[y] < 0) continue;
+      anyTop = true;
+      if (rowMin[y] < w / 3 - tx || rowMax[y] > (2 * w) / 3 + tx) topOk = false;
+    }
+    // a marcato is wider than tall; a letter A is square or taller, even when scan damage breaks its crossbar
+    if (bottomLeft && bottomRight && anyTop && topOk && w >= 1.05 * h) {
+      let crossbar = false;
+      for (let y = Math.max(1, Math.ceil(0.4 * h)); y < h - 1; y++) if (rowRun[y] >= 0.5 * w) { crossbar = true; break; }
+      if (!crossbar) return true;
+    }
+  }
+  return false;
+}
+
 /** Render a word to an upscaled, padded, black-on-white grayscale PNG for OCR. */
 export function wordToPng(word: TextWord, staffSpace: number, scaleDelta = 0): Uint8Array {
   // target: text cap height ~ 1.2 staff spaces -> about 48 px tall glyphs
@@ -476,6 +535,11 @@ export async function readChordText(b: Binary, staff: Staff, opts: FindOptions &
         result.excluded.push({ x, text, kind: 'rehearsal' });
         continue;
       }
+    }
+    // An accent (>) or marcato (^) over a note is OCR'd as the chord "A" because the whitelist forces a chord glyph.
+    if (/^[A-G]$/.test(text.replace(/[^A-Za-z]/g, '')) && looksLikeArticulation(word)) {
+      result.excluded.push({ x, text, kind: 'articulation' });
+      continue;
     }
     const p = parseChordText(text);
     if (p && p.confidence * Math.max(0.5, confidence) >= minConf * 0.6 && classifyNonChord(text) !== 'rehearsal') {

@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest';
 import { Canvas, staff as drawStaff, barline } from './fixtures/omr/synth';
 import { binarize } from '../src/omr/preprocess';
 import { detectStaves } from '../src/omr/staves';
-import { parseChordText, classifyNonChord, splitChordWord, findTextWords, assignMeasures, readChordText, configureChordOcr, disposeChordOcr } from '../src/omr/chordtext';
+import { parseChordText, classifyNonChord, splitChordWord, findTextWords, looksLikeArticulation, assignMeasures, readChordText, configureChordOcr, disposeChordOcr } from '../src/omr/chordtext';
 import { encodeGrayPng } from '../src/omr/chordtext/png';
 
 const t = (s: string) => parseChordText(s)?.text ?? null;
@@ -113,6 +113,12 @@ describe('blob finder (synthetic)', () => {
     expect(w[0].boxed).toBe(true);
   });
 
+  it('keeps a thin F (finder rule unchanged)', () => {
+    const c = page();
+    c.rect(200, 105, 201, 120); c.rect(200, 105, 208, 106); c.rect(200, 112, 205, 113);
+    expect(words(c).w.length).toBe(1);
+  });
+
   it('ignores tiny marks (articulations)', () => {
     const c = page();
     c.rect(200, 125, 205, 128);
@@ -170,4 +176,30 @@ describe.skipIf(!process.env.RUN_TESSERACT)('tesseract integration', () => {
       await disposeChordOcr();
     }
   }, 120000);
+});
+
+describe('looksLikeArticulation', () => {
+  /** Draw thick line segments (2 px) into a w*h bitmap. */
+  function bmp(w: number, h: number, segs: [number, number, number, number][], th = 2) {
+    const ink = new Uint8Array(w * h);
+    for (const [x0, y0, x1, y1] of segs) {
+      const n = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0)) * 2 + 1;
+      for (let i = 0; i <= n; i++) {
+        const x = Math.round(x0 + ((x1 - x0) * i) / n), y = Math.round(y0 + ((y1 - y0) * i) / n);
+        for (let dy = 0; dy < th; dy++) for (let dx = 0; dx < th; dx++) if (x + dx < w && y + dy < h) ink[(y + dy) * w + x + dx] = 1;
+      }
+    }
+    return { x0: 0, x1: w - 1, y0: 0, y1: h - 1, w, h, ink, boxed: false };
+  }
+  it('detects an accent >', () => expect(looksLikeArticulation(bmp(14, 10, [[0, 0, 12, 4], [0, 8, 12, 4]]))).toBe(true));
+  it('detects a marcato ^', () => expect(looksLikeArticulation(bmp(12, 10, [[0, 8, 5, 0], [10, 8, 5, 0]]))).toBe(true));
+  it('detects a wide, squat marcato ^', () => expect(looksLikeArticulation(bmp(16, 9, [[0, 7, 7, 0], [14, 7, 7, 0]]))).toBe(true));
+  it('rejects an A whose crossbar is broken by scan damage', () => {
+    const a = bmp(10, 12, [[0, 10, 4, 0], [8, 10, 4, 0], [2, 7, 8, 7]]);
+    for (let y = 6; y <= 9; y++) for (let x = 4; x <= 6; x++) a.ink[y * 10 + x] = 0; // 3 px gap in the middle
+    expect(looksLikeArticulation(a)).toBe(false);
+  });
+  it('rejects a printed A (crossbar)', () => expect(looksLikeArticulation(bmp(10, 14, [[0, 12, 4, 0], [8, 12, 4, 0], [2, 8, 8, 8]]))).toBe(false));
+  it('rejects a V', () => expect(looksLikeArticulation(bmp(10, 12, [[0, 0, 4, 10], [8, 0, 4, 10]]))).toBe(false));
+  it('rejects a thin F', () => expect(looksLikeArticulation(bmp(8, 14, [[0, 0, 0, 12], [0, 0, 7, 0], [0, 6, 5, 6]], 1))).toBe(false));
 });
