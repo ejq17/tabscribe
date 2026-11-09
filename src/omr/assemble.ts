@@ -1,4 +1,4 @@
-import { createEmptyScore, newNoteId, pulseTicks, type Note, type Score, type Track } from '../core';
+import { createEmptyScore, newNoteId, pulseTicks, type Note, type OmrSystem, type OmrSystemCell, type Score, type Track } from '../core';
 import { preprocess, toOriginal } from './preprocess';
 import { detectStaves, lineY } from './staves';
 import { analyzeStaff } from './symbols';
@@ -348,6 +348,8 @@ export function assembleScore(pages: PageResult[], ppq = 480, opts: { instrument
     count: number;
     /** chord labels placed by measure offset within the system; `frac` = position within the measure (0..1) */
     chords: Map<number, { label: ChordLabel; frac: number }[]>;
+    /** barline-aligned symbols of the first staff (geometry for `meta.omrSystems`) */
+    lead?: StaffSymbols;
   }
   const sysInfos: SysInfo[] = [];
   for (const page of pages) {
@@ -367,7 +369,7 @@ export function assembleScore(pages: PageResult[], ppq = 480, opts: { instrument
         count = Math.max(count, lay.measures.length);
       }
       const chords = sys.length > 0 ? placeChords(page.chordLabels?.[sysNo] ?? [], symsOf[0], page.staves[sys[0]].staffSpace, count) : new Map();
-      if (count > 0 || sys.length > 0) sysInfos.push({ page, staffIds: sys, measures, slash, changes, count, chords });
+      if (count > 0 || sys.length > 0) sysInfos.push({ page, staffIds: sys, measures, slash, changes, count, chords, lead: symsOf[0] });
     });
   }
   const totalMeasures = sysInfos.reduce((s, x) => s + x.count, 0);
@@ -414,6 +416,7 @@ export function assembleScore(pages: PageResult[], ppq = 480, opts: { instrument
   let slashMeasures = 0;
   const slashList: { index: number; tick: number; length: number }[] = [];
   const chordList: OmrChordEntry[] = [];
+  const systemGeoms: OmrSystem[] = [];
   let pendingTie = new Map<string, { midi: number; step: number }>();
   let pendingSig: SigChange | undefined;
   let unmatchedTies = 0;
@@ -547,6 +550,8 @@ export function assembleScore(pages: PageResult[], ppq = 480, opts: { instrument
       });
     }
     const nextPending = new Map<string, { midi: number; step: number }>();
+    const sysFirstMeasure = measureNo;
+    const sysMeasureInfo: { tick: number; length: number; beat: number }[] = [];
     const firstDone = new Set<string>();
 
     for (let m = 0; m < Math.max(1, si.count); m++) {
@@ -639,8 +644,13 @@ export function assembleScore(pages: PageResult[], ppq = 480, opts: { instrument
           if (label.confidence > prev.confidence) chordList[chordList.length - 1] = toEntry(label, measureNo, tick);
         } else chordList.push(toEntry(label, measureNo, tick));
       }
+      sysMeasureInfo.push({ tick: start, length: nominal, beat: pulseTicks(ppq, curTs.denominator) });
       cursor += nominal;
       measureNo++;
+    }
+    {
+      const g = systemGeometry(si, sysFirstMeasure, sysMeasureInfo);
+      if (g) systemGeoms.push(g);
     }
     // a tie that ran off the end of this system whose partner never appeared at the start of the next one
     unmatchedTies += pendingTie.size;
@@ -668,7 +678,63 @@ export function assembleScore(pages: PageResult[], ppq = 480, opts: { instrument
   score.meta.omrMeasures = measureNo;
   if (slashList.length > 0) score.meta.omrSlashMeasures = slashList;
   if (chordList.length > 0) score.meta.omrChords = chordList;
+  if (systemGeoms.length > 0) score.meta.omrSystems = systemGeoms;
   return score;
+}
+
+/** Page geometry of one system (first staff, barline cells) in original page pixels; undefined when it has no usable cells. */
+function systemGeometry(
+  si: { page: PageResult; staffIds: number[]; count: number; lead?: StaffSymbols },
+  firstMeasure: number,
+  minfo: { tick: number; length: number; beat: number }[],
+): OmrSystem | undefined {
+  const sym = si.lead;
+  if (!sym || si.staffIds.length === 0 || minfo.length === 0) return undefined;
+  const staff = si.page.staves[si.staffIds[0]];
+  const t = si.page.transform;
+  const bars = sym.barlines;
+  const multi = new Map<number, number>();
+  const slotOf = (x: number) => {
+    let k = 0;
+    for (let i = 0; i < bars.length; i++) if (x >= bars[i]) k = i + 1;
+    return k;
+  };
+  for (const m of sym.multiRests ?? []) multi.set(slotOf((m.x0 + m.x1) / 2), m.count);
+  const offsetOfSlot = (k: number) => {
+    let off = k;
+    for (const [slot, cnt] of multi) if (slot < k && cnt > 1) off += cnt - 1;
+    return off;
+  };
+  const yMid = (staff.lines[0] + staff.lines[4]) / 2;
+  const cells: OmrSystemCell[] = [];
+  for (let k = 0; k <= bars.length; k++) {
+    const off = offsetOfSlot(k);
+    if (off >= minfo.length) continue;
+    const x0 = k === 0 ? sym.musicStart : bars[k - 1];
+    const x1 = k < bars.length ? bars[k] : (sym.staffRight ?? staff.right);
+    if (!(x1 - x0 > 1)) continue;
+    const m = minfo[off];
+    cells.push({
+      x0: toOriginal(t, x0, yMid).x,
+      x1: toOriginal(t, x1, yMid).x,
+      measure: firstMeasure + off,
+      tick: m.tick,
+      length: m.length,
+      beatTicks: m.beat,
+    });
+  }
+  if (cells.length === 0) return undefined;
+  return {
+    page: si.page.index,
+    staffTop: toOriginal(t, staff.left, staff.lines[0]).y,
+    staffBottom: toOriginal(t, staff.left, staff.lines[4]).y,
+    staffSpace: staff.staffSpace / t.scale,
+    left: toOriginal(t, staff.left, yMid).x,
+    right: toOriginal(t, staff.right, yMid).x,
+    firstMeasure,
+    measureCount: minfo.length,
+    cells,
+  };
 }
 
 export interface OmrChordEntry {

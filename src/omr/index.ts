@@ -47,6 +47,7 @@
  *  - `note.confidence` is 0..1 (lowered for stemless/ambiguous heads and for measures whose durations had to be rescaled).
  */
 import type { Score } from '../core';
+import { maybeReadChordsWithClaude } from '../ai/claudeChords';
 import { recognizeImageDataWithChords } from './assemble';
 import type { OmrInstrument, RawImage, RecognizeOptions } from './types';
 import type { WorkerRequest, WorkerResponse } from './worker';
@@ -131,6 +132,7 @@ export async function recognizeScore(pages: HTMLCanvasElement[], opts: OmrOption
   } else {
     score = await runInline(raws, opts);
   }
+  await maybeReadChordsWithClaude(score, pages, { onProgress: opts.onProgress });
   score.meta.source = 'omr';
   score.meta.sourcePages = sourcePages;
   return score;

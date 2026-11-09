@@ -2,7 +2,7 @@
  * Chord-text probe: npx tsx scripts/omr-bench/chordtext-probe.ts [file.pdf] [--scale 2.5] [--out DIR]
  * Renders the PDF, runs staff detection + chord text OCR on every staff, and scores page 1 against ground truth.
  */
-import { createCanvas } from '@napi-rs/canvas';
+import { createCanvas, ImageData } from '@napi-rs/canvas';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { basename } from 'node:path';
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
@@ -10,6 +10,9 @@ import { preprocess } from '../../src/omr/preprocess';
 import { detectStaves } from '../../src/omr/staves';
 import { readChordText, findTextWords, wordToPng, disposeChordOcr, configureChordOcr } from '../../src/omr/chordtext';
 import type { RawImage } from '../../src/omr/types';
+import Anthropic from '@anthropic-ai/sdk';
+import { analyzePage, assembleScore } from '../../src/omr/assemble';
+import { callClaude, readChordsWithClaude } from '../../src/ai/claudeChords';
 
 const args = process.argv.slice(2);
 const file = args.find((a) => a.endsWith('.pdf')) ?? 'tests/fixtures/omr/real-local/a-child-is-born-guitar.pdf';
@@ -17,6 +20,13 @@ const opt = (n: string, d: string) => { const i = args.indexOf(n); return i >= 0
 const scale = Number(opt('--scale', '2.5'));
 const outDir = opt('--out', '/private/tmp/claude-501/-Users-ejquigley-Documents-Projects-Sheet-Music-to-Guitar-Tabs/5ecd0d2c-4e15-4b1e-94a8-3cd0301c1a16/scratchpad/bench-chordtext');
 const dumpStrips = args.includes('--strips');
+// --claude [--model claude-haiku-5-5]: read chords with Claude (same strip + prompt + post-processing as the app) and score it
+// against the same ground truth. Needs ANTHROPIC_API_KEY.
+const useClaude = args.includes('--claude');
+if (useClaude && !process.env.ANTHROPIC_API_KEY) {
+  console.error('--claude needs the ANTHROPIC_API_KEY environment variable (your own Anthropic API key). Nothing was sent.');
+  process.exit(1);
+}
 mkdirSync(outDir, { recursive: true });
 // keep eng.traineddata out of the repo root (tesseract.js caches into cwd by default)
 configureChordOcr({ cachePath: process.env.TESS_CACHE ?? outDir + '/tess-cache' });
@@ -93,3 +103,39 @@ log(`\nPage 1 exact-match: ${hit}/${total} (${((100 * hit) / total).toFixed(1)}%
 misses.forEach((m) => log('  MISS ' + m));
 writeFileSync(`${outDir}/${basename(file, '.pdf')}-chordtext.txt`, lines.join('\n'));
 await disposeChordOcr();
+
+if (useClaude) {
+  const model = opt('--model', 'claude-haiku-5-5');
+  const client = new Anthropic(); // reads ANTHROPIC_API_KEY
+  const canvases = pages.map((img) => {
+    const c = createCanvas(img.width, img.height);
+    c.getContext('2d').putImageData(new ImageData(img.data as any, img.width, img.height) as any, 0, 0);
+    return c;
+  });
+  const results = pages.map((img, i) => analyzePage(img, i));
+  const score = assembleScore(results);
+  const t0 = Date.now();
+  await readChordsWithClaude(score, canvases as any, {
+    caller: (png, n) => callClaude(client, model, png, n),
+    canvasFactory: (w, h) => createCanvas(w, h) as any,
+    onProgress: (p) => process.stderr.write(`\r${p.stage} ${Math.round(p.fraction * 100)}%`),
+  });
+  process.stderr.write('\n');
+  console.log(`\n=== Claude (${model}) in ${Date.now() - t0}ms ===`);
+  (score.meta.warnings ?? []).filter((w) => /Claude/.test(w)).forEach((w) => console.log('WARNING ' + w));
+  const systems = score.meta.omrSystems ?? [];
+  let cHit = 0, cTotal = 0, cFalse = 0;
+  systems.forEach((sys, k) => {
+    const got = (score.meta.omrChords ?? []).filter((c) => c.measure >= sys.firstMeasure && c.measure < sys.firstMeasure + sys.measureCount).map((c) => c.text);
+    console.log(`system ${k + 1} (page ${sys.page + 1}): ${got.join('  ')}`);
+    // ground truth is keyed by staff number on page 1 (one staff per system in the corpus chart)
+    const truth = sys.page === 0 ? TRUTH[k + 1] : undefined;
+    if (truth) {
+      cTotal += truth.length;
+      const pool = [...got];
+      for (const t of truth) { const j = pool.indexOf(t); if (j >= 0) { cHit++; pool.splice(j, 1); } }
+      cFalse += pool.length;
+    } else cFalse += got.length;
+  });
+  console.log(`\nClaude page 1 match: ${cHit}/${cTotal} (${cTotal ? ((100 * cHit) / cTotal).toFixed(1) : '0'}%), extra labels: ${cFalse}`);
+}

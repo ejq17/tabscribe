@@ -124,6 +124,33 @@ export interface OmrChord {
   confidence: number;
 }
 
+/** One barline-delimited cell of an OMR system (see `meta.omrSystems`). Page pixel coordinates are those of the canvas given to `recognizeScore`. */
+export interface OmrSystemCell {
+  x0: number;
+  x1: number;
+  /** 0-based index of the first measure of the cell (a multi-measure rest cell stands for several; chords land on the first) */
+  measure: number;
+  tick: number;
+  length: number;
+  /** ticks per beat (pulse) in this measure */
+  beatTicks: number;
+}
+
+/** Page geometry of one system, kept so a second reader (e.g. Claude) can crop the chord band and map results to measures. */
+export interface OmrSystem {
+  page: number;
+  /** y of the top / bottom staff line of the FIRST staff of the system */
+  staffTop: number;
+  staffBottom: number;
+  staffSpace: number;
+  left: number;
+  right: number;
+  /** first measure index of the system and the number of measures it spans (including multi-rest expansion) */
+  firstMeasure: number;
+  measureCount: number;
+  cells: OmrSystemCell[];
+}
+
 export interface ScoreMeta {
   title?: string;
   composer?: string;
@@ -135,6 +162,8 @@ export interface ScoreMeta {
   warnings?: string[];
   /** OMR: chord symbols read from the page; preferred over chords inferred from notes */
   omrChords?: OmrChord[];
+  /** OMR: per-system page geometry (see `OmrSystem`) */
+  omrSystems?: OmrSystem[];
   /** OMR: bars written in slash / chord-hit notation (no notes) */
   omrSlashMeasures?: { index: number; tick: number; length: number }[];
   [k: string]: unknown;

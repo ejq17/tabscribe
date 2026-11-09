@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import { TUNINGS, midiToName, nameToMidi } from '../core';
+import { CLAUDE_MODELS, useAiSettings, type ClaudeModel } from '../ai/settings';
+import { testClaudeKey } from '../ai/testKey';
 import { useStore } from '../store';
 import { restartIfPlaying } from './playback';
 import { useUi } from './uiStore';
@@ -37,6 +39,96 @@ function CustomTuning() {
       </button>
       {anyBad && <p className="field-err">Use note names like E4, Bb3, F#2.</p>}
     </fieldset>
+  );
+}
+
+function AiSection() {
+  const enabled = useAiSettings((s) => s.enabled);
+  const apiKey = useAiSettings((s) => s.apiKey);
+  const model = useAiSettings((s) => s.model);
+  const [show, setShow] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; message?: string } | null>(null);
+  const set = useAiSettings.getState().set;
+  const trimmed = apiKey.trim();
+  const note = CLAUDE_MODELS.find((m) => m.id === model)?.note;
+
+  const test = async () => {
+    setBusy(true);
+    setResult(null);
+    const r = await testClaudeKey(trimmed, model);
+    setResult(r.ok ? { ok: true } : { ok: false, message: r.message });
+    setBusy(false);
+  };
+
+  return (
+    <section>
+      <h3>AI chord reading</h3>
+      <label className="check">
+        <input type="checkbox" checked={enabled} onChange={(e) => set({ enabled: e.target.checked })} /> Read chord symbols with Claude
+      </label>
+      {enabled && !trimmed && <p className="hint">Nothing will happen until you enter an API key.</p>}
+      <label className="field">
+        Anthropic API key
+        <div className="field-row">
+          <input
+            type={show ? 'text' : 'password'}
+            value={apiKey}
+            placeholder="sk-ant-..."
+            autoComplete="off"
+            spellCheck={false}
+            aria-label="Anthropic API key"
+            onChange={(e) => {
+              set({ apiKey: e.target.value });
+              setResult(null);
+            }}
+          />
+          <button type="button" className="btn" onClick={() => setShow(!show)} aria-pressed={show}>
+            {show ? 'Hide' : 'Show'}
+          </button>
+        </div>
+      </label>
+      {trimmed && <p className="hint">Key saved (ends in ····{trimmed.slice(-4)})</p>}
+      <label className="field">
+        Model
+        <select value={model} onChange={(e) => set({ model: e.target.value as ClaudeModel })}>
+          {CLAUDE_MODELS.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.label} ({m.note})
+            </option>
+          ))}
+        </select>
+      </label>
+      {note && <p className="hint">{note}</p>}
+      <div className="btn-row">
+        <button className="btn" disabled={!trimmed || busy} onClick={test}>
+          {busy ? 'Testing…' : 'Test key'}
+        </button>
+        <button
+          className="btn"
+          disabled={!apiKey}
+          onClick={() => {
+            set({ apiKey: '' });
+            setResult(null);
+          }}
+        >
+          Clear key
+        </button>
+      </div>
+      {result && (
+        <p className={result.ok ? 'ai-ok' : 'field-err'} role="status">
+          {result.ok ? 'Key works.' : result.message}
+        </p>
+      )}
+      <p className="hint">
+        Your key stays in this browser and is sent only to Anthropic. During recognition, image strips of each staff's chord band are sent to
+        Anthropic for reading; usage is billed to your key. Create a key at{' '}
+        <a href="https://platform.claude.com" target="_blank" rel="noopener">
+          platform.claude.com
+        </a>
+        , scope it to a workspace and set a spend limit there.
+      </p>
+    </section>
   );
 }
 
@@ -186,6 +278,8 @@ export default function Settings() {
             <input type="range" min={60} max={160} step={10} value={Math.round(view.zoom * 100)} onChange={(e) => setView({ zoom: Number(e.target.value) / 100 })} />
           </label>
         </section>
+
+        <AiSection />
       </aside>
     </div>
   );

@@ -206,3 +206,8 @@ input[type='range'] { accent-color: var(--accent); }
 .lib-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .lib-actions .btn { padding: 3px 8px; font-size: 12px; }
 .lib-rename { display: flex; gap: 6px; } .lib-rename input { flex: 1; min-width: 0; }
+
+/* ---------- AI chord reading settings ---------- */
+.ai-ok { color: #2e7d32; font-size: 13px; margin: 0; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme='light']) .ai-ok { color: #7fd48f; } }
+:root[data-theme='dark'] .ai-ok { color: #7fd48f; }

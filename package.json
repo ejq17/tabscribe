@@ -12,6 +12,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.6.0",
     "@tonejs/midi": "^2.0.28",
     "abcjs": "^6.7.1",
     "fflate": "^0.8.3",
