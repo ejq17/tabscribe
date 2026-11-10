@@ -63,6 +63,8 @@ export default function TopBar() {
   const libraryName = useStore((s) => s.libraryName);
   const busy = useStore((s) => s.status.busy);
   const hasSource = !!score?.meta.sourcePages?.length;
+  const videoOpen = useUi((s) => s.videoOpen);
+  const setVideoOpen = useUi((s) => s.setVideoOpen);
 
   return (
     <header className="topbar">
@@ -100,6 +102,7 @@ export default function TopBar() {
             <Toggle on={view.showChords} onClick={() => setView({ showChords: !view.showChords })} label="Show chord names">Chords</Toggle>
             <Toggle on={view.showDiagrams} onClick={() => setView({ showDiagrams: !view.showDiagrams })} label="Show chord diagrams">Diagrams</Toggle>
             <Toggle on={view.showNotation} onClick={() => setView({ showNotation: !view.showNotation })} label="Show standard notation">Notation</Toggle>
+            <Toggle on={videoOpen} onClick={() => setVideoOpen(!videoOpen)} label="Show video panel">Video</Toggle>
             {hasSource && <Toggle on={view.showSource} onClick={() => setView({ showSource: !view.showSource })} label="Show original page">Source</Toggle>}
           </div>
         </>

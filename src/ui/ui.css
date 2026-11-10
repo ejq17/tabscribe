@@ -72,6 +72,18 @@ input[type='range'] { accent-color: var(--accent); }
 .source-page { cursor: pointer; }
 .src-box.low { border: 1px dashed var(--accent); background: rgba(224, 160, 48, 0.14); }
 
+/* ---------- video panel ---------- */
+.side-col { display: flex; flex-direction: column; gap: 14px; position: sticky; top: 0; min-width: 0; }
+.side-col .source-pane { position: static; max-height: 60dvh; }
+.video-panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 4px 10px 10px; }
+.vp-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; margin: 8px 0; }
+.vp-row > input[type='text'] { flex: 1 1 200px; }
+.vp-frame { position: relative; aspect-ratio: 16 / 9; width: 100%; background: #000; border-radius: 8px; overflow: hidden; margin-top: 8px; }
+.vp-frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+.vp-start, .vp-vol { display: flex; flex-direction: column; font-size: 11px; color: var(--muted); }
+.vp-start input { width: 8ch; }
+.vp-error { color: var(--danger); font-size: 13px; margin: 4px 2px; }
+
 /* ---------- tab svg ---------- */
 .string-line { stroke: var(--string); stroke-width: 1; }
 .barline { stroke: var(--ink); stroke-width: 1.4; }
@@ -169,7 +181,8 @@ input[type='range'] { accent-color: var(--accent); }
 /* ---------- phone ---------- */
 @media (max-width: 760px) {
   .workspace.split { grid-template-columns: 1fr; }
-  .source-pane { position: static; max-height: 60dvh; }
+  .source-pane, .side-col { position: static; max-height: 60dvh; }
+  .side-col { max-height: none; }
   .topbar { padding: 8px 10px; gap: 6px 8px; }
   .tb-spacer, .doc-title { display: none; }
   .workspace { padding: 8px; }
@@ -182,7 +195,7 @@ input[type='range'] { accent-color: var(--accent); }
 @media print {
   :root { --paper: #fff; --surface: #fff; --surface-2: #fff; --ink: #000; --muted: #000; --string: #000; --line: #999; --accent-strong: #000; --accent-soft: transparent; --low: transparent; }
   body, .app { background: #fff !important; color: #000; height: auto; display: block; }
-  .topbar, .transport, .warnings, .error-note, .progress-card, .drawer-wrap, .drop-overlay, .notation-wrap, .source-pane, .note-editor, .empty, .playhead, .cursor { display: none !important; }
+  .topbar, .transport, .warnings, .error-note, .progress-card, .drawer-wrap, .drop-overlay, .notation-wrap, .source-pane, .side-col, .note-editor, .empty, .playhead, .cursor { display: none !important; }
   .scroll-area { overflow: visible; } .workspace, .doc { display: block; padding: 0; max-width: none; }
   .tabview, .strum { border: 0; overflow: visible; }
   .tab-note.sel .tn-bg, .tab-note.low .tn-bg { fill: #fff; stroke: none; } .tab-note.sel .tn-text { fill: #000; }

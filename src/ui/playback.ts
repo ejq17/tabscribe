@@ -4,6 +4,32 @@ import { useStore } from '../store';
 import type { ChordEvent } from '../chords';
 import { useAudioUi } from './uiStore';
 
+export type PlaybackEvent =
+  | { type: 'play'; tick: number }
+  | { type: 'pause'; tick: number }
+  | { type: 'stop' }
+  | { type: 'seek'; tick: number };
+
+const listeners = new Set<(e: PlaybackEvent) => void>();
+/** Observe transport actions (play / pause / stop / seek), e.g. to keep a video in sync. Returns an unsubscribe function. */
+export function onPlaybackEvent(cb: (e: PlaybackEvent) => void): () => void {
+  listeners.add(cb);
+  return () => listeners.delete(cb);
+}
+function emit(e: PlaybackEvent): void {
+  listeners.forEach((l) => l(e));
+}
+
+let guitarMuted = false;
+export function isGuitarMuted(): boolean {
+  return guitarMuted;
+}
+/** Silence / restore the app's own guitar (the Transport volume slider is kept and applied again on unmute). */
+export function setGuitarMuted(m: boolean): void {
+  guitarMuted = m;
+  setVolume(useStore.getState().playback.volume);
+}
+
 let playerPromise: Promise<Player> | null = null;
 let player: Player | null = null;
 
@@ -16,6 +42,7 @@ export function getPlayer(): Promise<Player> {
       const p = new mod.Player();
       await p.load();
       player = p;
+      if (guitarMuted) p.setVolume(0);
       useAudioUi.setState({ loading: false });
       return p;
     })().catch((e) => {
@@ -55,21 +82,25 @@ export async function startPlayback(fromTick?: number): Promise<void> {
     onEnd: () => {
       const pb = useStore.getState().playback;
       useStore.getState().setPlayback({ isPlaying: false, tick: pb.loop?.from ?? 0 });
+      emit({ type: 'stop' });
     },
     chords: settings.playChords ? chords : undefined,
   };
   p.play(score, guitar, opts);
+  emit({ type: 'play', tick: from });
 }
 
 export function pausePlayback(): void {
   const tick = useStore.getState().playback.tick;
   player?.pause();
   useStore.getState().setPlayback({ isPlaying: false, tick });
+  emit({ type: 'pause', tick });
 }
 
 export function stopPlayback(): void {
   player?.stop();
   useStore.getState().setPlayback({ isPlaying: false, tick: useStore.getState().playback.loop?.from ?? 0 });
+  emit({ type: 'stop' });
 }
 
 export async function togglePlay(): Promise<void> {
@@ -81,6 +112,7 @@ export async function seekTo(tick: number): Promise<void> {
   const pb = useStore.getState().playback;
   useStore.getState().setPlayback({ tick });
   if (pb.isPlaying) await startPlayback(tick);
+  else emit({ type: 'seek', tick });
 }
 
 /** Restart from the current position when a live setting (tempo, metronome, loop) changes. */
@@ -99,5 +131,5 @@ export async function auditionPitch(pitch: number): Promise<void> {
 
 export function setVolume(v: number): void {
   const p = player as unknown as { setVolume?: (v: number) => void } | null;
-  p?.setVolume?.(v);
+  p?.setVolume?.(guitarMuted ? 0 : v);
 }

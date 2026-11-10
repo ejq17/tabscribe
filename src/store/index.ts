@@ -7,6 +7,7 @@ import {
   type Note,
   type NoteId,
   type Score,
+  type ScoreVideo,
   TUNINGS,
 } from '../core';
 import { importFile } from '../importers';
@@ -97,6 +98,8 @@ export interface AppState {
   reassignTab: () => void;
   clearLocks: () => void;
   setPlayback: (p: Partial<PlaybackState>) => void;
+  /** Attach / replace / remove (undefined) the YouTube video stored in `score.meta.video`. Not an undo step. */
+  setVideo: (video: ScoreVideo | undefined) => void;
   setView: (v: Partial<ViewState>) => void;
   setSettings: (s: Partial<SettingsState>) => void;
   setStatus: (s: Partial<StatusState>) => void;
@@ -441,6 +444,15 @@ export const useStore = create<AppState>()((set, get) => {
       const { score } = get();
       if (!score) return;
       commit(mapGuitarNotes(score, (n) => (n.tabLocked ? { ...n, tabLocked: false } : n)));
+    },
+
+    setVideo(video) {
+      const { score } = get();
+      if (!score) return;
+      const meta = { ...score.meta };
+      if (video) meta.video = { youtubeId: video.youtubeId, startSec: Math.max(0, video.startSec) };
+      else delete meta.video;
+      commit({ ...score, meta }, false);
     },
 
     setPlayback(p) {

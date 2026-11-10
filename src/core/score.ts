@@ -151,6 +151,12 @@ export interface OmrSystem {
   cells: OmrSystemCell[];
 }
 
+/** A YouTube video attached to a tab; `startSec` is the video time that matches the start (tick 0) of the tab. */
+export interface ScoreVideo {
+  youtubeId: string;
+  startSec: number;
+}
+
 export interface ScoreMeta {
   title?: string;
   composer?: string;
@@ -166,6 +172,8 @@ export interface ScoreMeta {
   omrSystems?: OmrSystem[];
   /** OMR: bars written in slash / chord-hit notation (no notes) */
   omrSlashMeasures?: { index: number; tick: number; length: number }[];
+  /** Attached YouTube video, played in sync with the tab */
+  video?: ScoreVideo;
   [k: string]: unknown;
 }
 

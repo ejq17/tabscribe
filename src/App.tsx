@@ -9,6 +9,8 @@ import WarningsBar from './ui/WarningsBar';
 import TabView from './ui/TabView';
 import StrumChart from './ui/StrumChart';
 import SourcePane from './ui/SourcePane';
+import VideoPanel from './ui/VideoPanel';
+import { useUi } from './ui/uiStore';
 import { DropOverlay, EmptyState, ErrorNote, ProgressCard } from './ui/FileDrop';
 import { useKeyboard } from './ui/useKeyboard';
 
@@ -24,7 +26,13 @@ export default function App() {
   const score = useStore((s) => s.score);
   const view = useStore((s) => s.view);
   const hasSource = !!score?.meta.sourcePages?.length;
-  const split = view.showSource && hasSource;
+  const videoOpen = useUi((s) => s.videoOpen);
+  const showSourcePane = view.showSource && hasSource;
+  const split = showSourcePane || videoOpen;
+  const attachedId = score?.meta.video?.youtubeId;
+  useEffect(() => {
+    if (attachedId) useUi.getState().setVideoOpen(true);
+  }, [attachedId]);
 
   return (
     <div className="app">
@@ -46,7 +54,12 @@ export default function App() {
                 </Suspense>
               )}
             </div>
-            {split && <SourcePane />}
+            {split && (
+              <div className="side-col">
+                {videoOpen && <VideoPanel />}
+                {showSourcePane && <SourcePane />}
+              </div>
+            )}
           </div>
         )}
       </main>
