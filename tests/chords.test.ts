@@ -258,6 +258,46 @@ describe('chordDiagram extended qualities', () => {
       expect(chordVoicing(nm, STANDARD_TUNING)).not.toBeNull();
     }
   });
+  const lowPc = (d: { frets: number[] }) => {
+    const i = Math.max(...d.frets.map((f, k) => (f >= 0 ? k : -1)));
+    return (STANDARD_TUNING.pitches[i] + d.frets[i]) % 12;
+  };
+  const pcs = (d: { frets: number[] }) => d.frets.map((f, i) => (f >= 0 ? (STANDARD_TUNING.pitches[i] + f) % 12 : -1));
+  it('Ebm6/F voices the non-chord-tone bass on the lowest string', () => {
+    const d = chordDiagram('Ebm6/F', STANDARD_TUNING);
+    expect(d).not.toBeNull();
+    expect(d!.name).toBe('Ebm6/F');
+    expect(lowPc(d!)).toBe(5);
+    const tones = new Set(chordIntervals('m6')!.tones.map((t) => (3 + t) % 12));
+    const sounded = pcs(d!).filter((x) => x >= 0);
+    expect(sounded.slice(0, -1).length).toBeGreaterThan(1);
+    const low = Math.max(...d!.frets.map((f, k) => (f >= 0 ? k : -1)));
+    pcs(d!).forEach((pc, i) => { if (pc >= 0 && i !== low) expect(tones.has(pc)).toBe(true); });
+    const v = chordVoicing('Ebm6/F', STANDARD_TUNING);
+    expect(v).not.toBeNull();
+    expect(v![0] % 12).toBe(5);
+  });
+  it('slash chords put the bass on the lowest sounded string', () => {
+    const bassOf: Record<string, number> = { 'C/Bb': 10, 'D/F#': 6, 'G/B': 11, 'Am/G': 7, 'F/G': 7, 'C/E': 4 };
+    for (const [nm, b] of Object.entries(bassOf)) {
+      const d = chordDiagram(nm, STANDARD_TUNING);
+      expect(d, nm).not.toBeNull();
+      expect(lowPc(d!), nm).toBe(b);
+    }
+  });
+  it('every root x quality x bass gets a diagram; reached basses leave only tones or the bass', () => {
+    NAMES.forEach((nm, root) => {
+      for (const q of QUALITIES) {
+        const iv = chordIntervals(q)!;
+        const tones = new Set(iv.tones.map((t) => (root + t) % 12));
+        NAMES.forEach((bn, b) => {
+          const d = chordDiagram(`${nm}${q}/${bn}`, STANDARD_TUNING);
+          expect(d, `${nm}${q}/${bn}`).not.toBeNull();
+          if (lowPc(d!) === b) for (const pc of pcs(d!)) if (pc >= 0) expect(tones.has(pc) || pc === b, `${nm}${q}/${bn}`).toBe(true);
+        });
+      }
+    });
+  }, 120000);
   it('still rejects unreadable qualities', () => {
     expect(chordDiagram('Cfoo', STANDARD_TUNING)).toBeNull();
   });

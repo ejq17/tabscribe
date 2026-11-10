@@ -166,7 +166,15 @@ function lookupStandard(p: ParsedChord, name: string): ChordDiagram | null {
 }
 
 /** Search for a playable voicing in any tuning. */
+/**
+ * Voicing search. A slash bass that is not a chord tone is allowed on the lowest sounded string only; if no shape
+ * reaches the bass under the span/finger limits, the plain chord is voiced instead (printed name kept).
+ */
 function searchVoicing(p: ParsedChord, tuning: Tuning, name: string): ChordDiagram | null {
+  return searchWithBass(p, tuning, name, p.bass) ?? (p.bass !== null ? searchWithBass(p, tuning, name, null) : null);
+}
+
+function searchWithBass(p: ParsedChord, tuning: Tuning, name: string, bass: number | null): ChordDiagram | null {
   const ci = chordIntervals(p.quality);
   let tones: Set<number>;
   let required: Set<number>;
@@ -181,8 +189,10 @@ function searchVoicing(p: ParsedChord, tuning: Tuning, name: string): ChordDiagr
     required = new Set(tones);
     if (ivs.length >= 4 && ivs.includes(7)) required.delete(fifth);
   }
+  const extraBass = bass !== null && !tones.has(bass);
+  if (extraBass) tones.add(bass);
   const n = tuning.pitches.length; // index 0 = high
-  const bassPc = p.bass ?? p.root;
+  const bassPc = bass ?? p.root;
   let best: { frets: number[]; score: number } | null = null;
   const maxBase = 12;
   for (let base = 1; base <= maxBase; base++) {
@@ -211,7 +221,8 @@ function searchVoicing(p: ParsedChord, tuning: Tuning, name: string): ChordDiagr
       if (fretted.length) { if (Math.max(...fretted) - Math.min(...fretted) > 3) return; }
       const lowest = Math.max(...sounded);
       const lowPc = pitchClass(tuning.pitches[lowest] + frets[lowest]);
-      if (p.bass !== null && lowPc !== p.bass) return;
+      if (bass !== null && lowPc !== bass) return;
+      if (extraBass) for (const i of sounded) if (i !== lowest && pitchClass(tuning.pitches[i] + frets[i]) === bass) return;
       // finger count
       let fingers = fretted.length;
       if (fretted.length) {
