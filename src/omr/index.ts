@@ -3,6 +3,7 @@
  *
  * Public API
  *  - renderPdfPages(data, scale?)            PDF → canvases (pdf.js, worker bundled locally)
+ *  - renderPdfPagesWithText(data, scale?)    same, plus the PDF text layer per page (`textItems`, canvas pixels) for `recognizeScore`
  *  - imageToCanvas(file)                     image file → canvas
  *  - recognizeScore(pages, opts?)            canvases → Score (pixel work runs in a Web Worker when available)
  *  - recognizeImageData(pages, opts?)        pure/synchronous version over `{width,height,data}` RGBA buffers (no chords)
@@ -28,6 +29,13 @@
  *    (detected from the page image, voted per part). Guitar music is usually printed WITHOUT the 8; pass
  *    `instrument: 'guitar'` (RecognizeOptions) to read treble clefs an octave lower, EXCEPT inside a piano grand staff or any system that contains a bass-clef staff (keyboard music is not transposed). Default 'concert' reads
  *    treble clefs as written (plus the printed 8). The UI exposes this as the "written for guitar" setting.
+ *  - TEXT LAYER: for digital PDFs `recognizeScore({ textItems })` reads chord symbols (exact, confidence 1, no OCR), the printed
+ *    bar numbers (they fix multi-measure-rest lengths), the key signature (accidental glyphs) and the printed tempo from the
+ *    PDF text. A page whose text layer has no chord-like item, and any system whose chord band holds text that cannot be decoded
+ *    (unknown private-use glyphs), is read by OCR as before. `omrSystems[].textLayer` marks systems whose chords came from the
+ *    text layer (the Claude reader skips those).
+ *  - A barline drawn right after the clef / key / time signature is the start of the music, not a measure; thin-stroke rhythm
+ *    slashes and H-bar multi-measure rests are recognized.
  *  - `meta.omrMeasures`   number of measures the assembler laid out (courtesy key/time signatures after the last
  *                         barline of a staff are NOT measures; they are carried to the start of the next system).
  *  - `meta.omrSlashMeasures` (only present when found) `{ index, tick, length }[]`: bars written in slash / chord-hit
@@ -50,9 +58,12 @@ import type { Score } from '../core';
 import { maybeReadChordsWithClaude } from '../ai/claudeChords';
 import { recognizeImageDataWithChords } from './assemble';
 import type { OmrInstrument, RawImage, RecognizeOptions } from './types';
+import type { PdfTextItem } from './textlayer';
 import type { WorkerRequest, WorkerResponse } from './worker';
 
-export { renderPdfPages } from './pdf';
+export { renderPdfPages, renderPdfPagesWithText } from './pdf';
+export type { RenderedPdf } from './pdf';
+export type { PdfTextItem } from './textlayer';
 export { imageToCanvas } from './image';
 export { recognizeImageData, recognizeImageDataWithChords, analyzePage, assembleScore, readPageChords } from './assemble';
 export type { OmrChordEntry } from './assemble';
@@ -67,6 +78,8 @@ export interface OmrOptions {
   defaultClef?: 'treble' | 'bass';
   /** 'guitar': treble clefs sound an octave below written. Default 'concert'. */
   instrument?: OmrInstrument;
+  /** PDF text layer per page (from `renderPdfPagesWithText`); chord symbols, bar numbers, key and tempo are read from it when present */
+  textItems?: PdfTextItem[][];
 }
 
 function canvasToRaw(c: HTMLCanvasElement): RawImage {
@@ -104,6 +117,7 @@ function runInWorker(pages: RawImage[], opts: RecognizeOptions): Promise<Score> 
       type: 'recognize',
       defaultClef: opts.defaultClef,
       instrument: opts.instrument,
+      textItems: opts.textItems,
       pages: pages.map((p) => ({ width: p.width, height: p.height, buffer: p.data.buffer as ArrayBuffer })),
     };
     worker.postMessage(req, req.pages.map((p) => p.buffer));

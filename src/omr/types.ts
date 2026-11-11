@@ -159,6 +159,12 @@ export interface PageResult {
   grey?: Uint8Array;
   /** chord-symbol labels read above the FIRST staff of each system (index = system index); set by `readPageChords` */
   chordLabels?: import('./chordtext').ChordLabel[][];
+  /** printed tempo marks read above the first staff of each system (index = system index); set by `readPageChords` */
+  tempoMarks?: import('./tempo').TempoMark[][];
+  /** per system: printed bar numbers / key signature read from the PDF text layer (set by `readPageChords` when the page has one) */
+  textLayer?: import('./textlayer').SystemText[];
+  /** per system: the chord labels were taken from the text layer (not OCR) */
+  textChords?: boolean[];
   /**
    * Per staff (same index as `staves`): -1 when a small "8" was found below a treble clef (tenor / guitar clef: the
    * music sounds an octave lower than written), 0 otherwise. Set by `analyzePage`; absent = all 0.
@@ -178,4 +184,6 @@ export interface RecognizeOptions {
   defaultClef?: ClefKind;
   instrument?: OmrInstrument;
   onProgress?: (p: { stage: string; fraction: number; page?: number }) => void;
+  /** PDF text layer per page (canvas pixels, see `PdfTextItem`); absent / empty for scans and images */
+  textItems?: import('./textlayer').PdfTextItem[][];
 }

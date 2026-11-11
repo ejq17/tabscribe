@@ -372,7 +372,7 @@ export function classifyDigit(d: Uint8Array, w: number, h: number): number {
       } else if (barA >= 0) break;
     }
     // a 9 / 6 / 0 / 8 loop is a WIDE hole (>= 0.3 w); a 4's triangle is a thin sliver
-    const wideHole = holes.some((hl) => hl.x1 - hl.x0 + 1 >= 0.3 * w);
+    const wideHole = holes.some((hl) => hl.x1 - hl.x0 + 1 >= 0.3 * w && hl.y1 - hl.y0 + 1 >= 0.3 * h); // a 4's triangle is wide only at its base and short
     if (barA >= 0 && !wideHole) {
       // only the first rows below the bar: a staff line crossing the stem near the bottom leaves a wide residue row there
       const yEnd = Math.min(Math.floor(0.9 * h) - 1, barB + 3);
@@ -387,6 +387,19 @@ export function classifyDigit(d: Uint8Array, w: number, h: number): number {
       let leftDiag = false;
       for (let y = Math.round(0.35 * h); y < barA && !leftDiag; y++) for (let x = 0; x < Math.round(0.3 * w) && !leftDiag; x++) if (d[y * w + x]) leftDiag = true;
       if (hi >= lo && yEnd - (barB + 1) >= 1 && hi - lo + 1 <= 0.45 * w && (lo + hi) / 2 > 0.5 * w && hi <= 0.9 * w && leftDiag) return 4;
+      // A heavy hand-lettered crossbar tapers into the stem over several rows, so the rows right under it are still wide:
+      // judge the stem on the bottom fifth of the glyph instead (one narrow stroke right of centre).
+      {
+        let lo2 = w;
+        let hi2 = -1;
+        for (let y = Math.round(0.8 * h); y < h; y++)
+          for (let x = 0; x < w; x++)
+            if (d[y * w + x]) {
+              if (x < lo2) lo2 = x;
+              if (x > hi2) hi2 = x;
+            }
+        if (hi2 >= lo2 && hi2 - lo2 + 1 <= 0.4 * w && (lo2 + hi2) / 2 > 0.55 * w && hi2 <= 0.92 * w && leftDiag && barB - barA <= 0.2 * h) return 4;
+      }
     }
   }
   if (holes.length >= 2) return 8;
@@ -401,8 +414,26 @@ export function classifyDigit(d: Uint8Array, w: number, h: number): number {
   }
   // no holes
   if (w < 0.4 * h && maxCol > 0.8) return 1;
-  if (maxCol >= 0.85 && maxColX > 0.55 * w && maxColX <= 0.88 * w && botRun < 0.5) return 4; // open-top 4
-  if (botRun >= 0.8 && topRun < 0.9) return 2;
+  if (maxCol >= 0.85 && maxColX > 0.55 * w && maxColX <= 0.88 * w && botRun < 0.5) {
+    // open-top 4: below its crossbar a 4 is a single stem, whereas a bold 3 whose two bowls line up on the right (so that the
+    // right side is one long column) still shows its lower bowl: a curl on the left AND the right side, i.e. two strokes
+    let single = 0;
+    let n = 0;
+    for (let y = Math.round(0.7 * h); y <= Math.round(0.92 * h); y++) {
+      n++;
+      let runs = 0;
+      for (let x = 0; x < w; x++) if (d[y * w + x] && (x === 0 || !d[y * w + x - 1])) runs++;
+      if (runs <= 1) single++;
+    }
+    if (n === 0 || single >= 0.7 * n) return 4;
+  }
+  if (botRun >= 0.8 && topRun < 0.9) {
+    // A bold 3 sitting on a staff line loses its lower bowl to the line removal and ends in a full-width bar like a 2. The
+    // ink just above that bar still tells them apart: a 2's diagonal runs down along the left, a 3's bowl stays on the right.
+    let minX = w;
+    for (let y = Math.round(0.7 * h); y <= Math.round(0.85 * h); y++) for (let x = 0; x < w; x++) if (d[y * w + x]) { if (x < minX) minX = x; break; }
+    return minX >= 0.5 * w && minX < w ? 3 : 2;
+  }
   if (topRun >= 0.85 && botRun < 0.4) return 7;
   // A 3 with a flat top bar (bold / MuseScore faces) looks like a 5 from the top. But its upper bowl closes the RIGHT side
   // at 20-40% of the height, whereas a 5 is open there (bar, then a stem on the left only).
@@ -431,9 +462,32 @@ export function classifyDigit(d: Uint8Array, w: number, h: number): number {
         break;
       }
     }
-    if (topRun >= 0.6 && rowsN > 0 && rowsWithLeft >= 0.85 * rowsN && botRun < 0.8 && rightCov < 0.6) return 5;
+    // ...and that bar starts at the stem, i.e. at the left edge; a hand-lettered 3 starts its top arc well right of it
+    // and below it a 5 is ONE stroke (its stem) in the upper-middle rows, where a 3 shows two (a notch between its arcs)
+    let twoRuns = 0;
+    for (let y = Math.round(0.2 * h); y <= Math.round(0.4 * h); y++) {
+      let runs = 0;
+      for (let x = 0; x < w; x++) if (d[y * w + x] && (x === 0 || !d[y * w + x - 1])) runs++;
+      if (runs >= 2) twoRuns++;
+    }
+    const twoRunsFrac = twoRuns / Math.max(1, Math.round(0.4 * h) - Math.round(0.2 * h) + 1);
+    if (topRun >= 0.6 && rowsN > 0 && rowsWithLeft >= 0.85 * rowsN && botRun < 0.8 && rightCov < 0.6 && twoRunsFrac < 0.6) return 5;
   }
-  if (botRun < 0.8) return 3;
+  if (botRun < 0.8) {
+    // A hand-lettered 2 has no flat base bar to speak of, but its diagonal is ONE stroke in the lower-middle rows (left of
+    // 60% of the width), where a 3 shows both sides of its lower bowl.
+    let leftOnly = 0;
+    let rows = 0;
+    for (let y = Math.round(0.5 * h); y <= Math.round(0.68 * h); y++) {
+      rows++;
+      let lo = w;
+      let hi = -1;
+      for (let x = 0; x < w; x++) if (d[y * w + x]) { if (x < lo) lo = x; hi = x; }
+      if (hi >= 0 && hi < 0.6 * w) leftOnly++;
+    }
+    if (rows > 0 && leftOnly >= 0.6 * rows) return 2;
+    return 3;
+  }
   return -1;
 }
 
@@ -798,9 +852,40 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
       if (any) rowsInked++;
     }
     const contiguousTall = body.length > 0 && bh >= 5.5 * d && bSpans && rowsInked >= 0.88 * bh && bx1 - bx0 + 1 <= 4.5 * d;
+    // A rehearsal-mark box (or any text) above the staff start can chain the first key-signature flat / sharp into the clef's
+    // zone (their x-ranges touch through the box), which makes the zone look too wide for a clef and swallows the key. Judge
+    // the clef alone: the tallest body component plus whatever overlaps it horizontally.
+    let coreTall = false;
+    let coreEnd = zone.x1;
+    const coreIds = new Set<number>();
+    if (body.length > 1) {
+      const tallest = body.reduce((m, c) => (c.y1 - c.y0 > m.y1 - m.y0 ? c : m), body[0]);
+      const part = body.filter((c) => c.x0 <= tallest.x1 && c.x1 >= tallest.x0);
+      const px0 = Math.min(...part.map((c) => c.x0));
+      const px1 = Math.max(...part.map((c) => c.x1));
+      const py0 = Math.min(...part.map((c) => c.y0));
+      const py1 = Math.max(...part.map((c) => c.y1));
+      const ph = py1 - py0 + 1;
+      let rows = 0;
+      for (let y = py0; y <= py1; y++) {
+        let any = false;
+        for (let x = px0; x <= px1 && !any; x++) if (clean.d[y * W + x]) any = true;
+        if (any) rows++;
+      }
+      if (ph >= 5.5 * d && py0 < topL - 0.5 * d && py1 > botL + 0.5 * d && rows >= 0.88 * ph && px1 - px0 + 1 <= 4.5 * d) {
+        coreTall = true;
+        coreEnd = px1;
+        for (const c of part) coreIds.add(c.id);
+      }
+    }
     if (((zh >= 5 * d || spans) && clefStroke.some((k) => k.x0 > staff.left - rx0 + 0.8 * d)) || contiguousTall) {
       for (const id of zone.ids) used.add(id);
-      clefEnd = zone.x1;
+      clefEnd = coreTall ? Math.min(zone.x1, coreEnd) : zone.x1;
+      clef = 'treble';
+      clefDetected = true;
+    } else if (coreTall) {
+      for (const id of coreIds) used.add(id);
+      clefEnd = coreEnd;
       clef = 'treble';
       clefDetected = true;
     } else {
@@ -1098,19 +1183,161 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
         slashIds.add(c.id);
       }
     }
+    // Thin-stroke slashes (digitally engraved charts): a slanted line about 0.2 d thick and 1.1 .. 2.6 d long. Its horizontal
+    // runs are too short for the core test above and its area too small, so it used to come out as an eighth rest.
+    // Judged on ALL of the component's pixels: a very elongated straight blob of the right slope centred on the staff.
+    for (const c of comps) {
+      if (slashIds.has(c.id) || used.has(c.id) || isBarline(c) || c.x0 < musicStart - 0.2 * d) continue;
+      const w = ww(c);
+      const h = hh(c);
+      if (w < 0.5 * d || w > 2.4 * d || h < 0.9 * d || h > 3.0 * d || c.area < 0.25 * d * d || c.area > 1.2 * d * d) continue;
+      let n = 0;
+      let sx = 0;
+      let sy = 0;
+      let sxx = 0;
+      let syy = 0;
+      let sxy = 0;
+      for (let y = c.y0; y <= c.y1; y++)
+        for (let x = c.x0; x <= c.x1; x++) {
+          if (labels[y * W + x] !== c.id) continue;
+          n++;
+          sx += x;
+          sy += y;
+          sxx += x * x;
+          syy += y * y;
+          sxy += x * y;
+        }
+      if (n < 8) continue;
+      const mx = sx / n;
+      const my = sy / n;
+      const vxx = sxx / n - mx * mx;
+      const vyy = syy / n - my * my;
+      const vxy = sxy / n - mx * my;
+      const tr = vxx + vyy;
+      const det = vxx * vyy - vxy * vxy;
+      const disc = Math.sqrt(Math.max(0, (tr * tr) / 4 - det));
+      const l1 = tr / 2 + disc;
+      const l2 = Math.max(1e-6, tr / 2 - disc);
+      const elong = Math.sqrt(l1 / l2);
+      const theta = 0.5 * Math.atan2(2 * vxy, vxx - vyy);
+      const slope = (-theta * 180) / Math.PI;
+      const len = Math.sqrt(12 * l1);
+      if (elong >= 4 && slope >= 30 && slope <= 78 && len >= 1.0 * d && len <= 2.7 * d && Math.abs(my - midL) <= 1.8 * d) {
+        slashes.push({ cx: mx + rx0, cy: my + ry0 });
+        slashIds.add(c.id);
+      }
+    }
   }
 
   // ---- multi-measure rests (thick bar on the middle line, number above)
   const multiRests: { x0: number; x1: number; count: number; guessed: boolean }[] = [];
   const mrIds = new Set<number>();
   {
-    const bars = findMultiRestBars({ w: W, h: H, d: src.d }, d, t, midL, lx(staff.left), lx(staff.right)).filter((b) => b.x0 > musicStart - 0.2 * d && b.x1 - b.x0 >= 4.5 * d); // shorter thick bars are beams
+    const bars: { x0: number; x1: number; hbar?: boolean; id?: number }[] = findMultiRestBars({ w: W, h: H, d: src.d }, d, t, midL, lx(staff.left), lx(staff.right)).filter((b) => b.x0 > musicStart - 0.2 * d && b.x1 - b.x0 >= 4.5 * d); // shorter thick bars are beams
+    // H-bars (digitally engraved charts): a short thick bar with a tall end cap at each side, one connected component that
+    // reaches above AND below the bar at both ends (a beam only reaches to one side). Often narrower than 4.5 d and a little
+    // off the middle line, which the thick-bar search above does not accept.
+    /** A slanted thick band (rise <= 1 space over its length, thickness 0.3-0.9 space in every interior column) with an end cap
+     * reaching above and below it at both ends: the hand-lettered multi-measure rest. One connected component. */
+    const slantedBar = (c: (typeof comps)[number]): boolean => {
+      const inset = Math.ceil(0.35 * d);
+      const x0 = c.x0 + inset;
+      const x1 = c.x1 - inset;
+      if (x1 - x0 < 2 * d) return false;
+      const centre: number[] = [];
+      const len: number[] = [];
+      for (let x = x0; x <= x1; x++) {
+        // longest vertical run of the component in this column
+        let best = 0;
+        let bestC = 0;
+        let run = 0;
+        for (let y = c.y0; y <= c.y1 + 1; y++) {
+          if (y <= c.y1 && labels[y * W + x] === c.id) run++;
+          else {
+            if (run > best) {
+              best = run;
+              bestC = y - run / 2;
+            }
+            run = 0;
+          }
+        }
+        len.push(best);
+        centre.push(bestC);
+      }
+      const good = len.filter((l) => l >= 0.3 * d && l <= 1.3 * d).length;
+      if (good < 0.9 * len.length) return false;
+      const med = [...len].sort((a, b) => a - b)[len.length >> 1];
+      if (med < 0.35 * d || med > 1.25 * d) return false;
+      const q = Math.max(1, Math.floor(len.length / 4));
+      const avg = (a: number[]) => a.reduce((s, v) => s + v, 0) / a.length;
+      const cL = avg(centre.slice(0, q));
+      const cR = avg(centre.slice(-q));
+      if (Math.abs(cR - cL) > 1.0 * d || Math.abs(cR - cL) < 0.0) return false;
+      const capsOk = (xa: number, xb: number, cy: number): boolean => {
+        let top = Infinity;
+        let bot = -Infinity;
+        for (let x = xa; x <= xb; x++) for (let y = c.y0; y <= c.y1; y++) if (labels[y * W + x] === c.id) {
+          top = Math.min(top, y);
+          bot = Math.max(bot, y);
+        }
+        return cy - top >= med / 2 + 0.3 * d && bot - cy >= med / 2 + 0.3 * d;
+      };
+      return capsOk(c.x0, c.x0 + inset, cL) && capsOk(c.x1 - inset, c.x1, cR);
+    };
+    for (const c of comps) {
+      if (c.x0 <= musicStart - 0.2 * d || used.has(c.id) || slashIds.has(c.id) || isBarline(c)) continue;
+      const w = ww(c);
+      const h = hh(c);
+      if (w < 2.2 * d || w > 8 * d || h < 1.0 * d || h > 5.4 * d || Math.abs(half(c) - midL) > 1.2 * d) continue;
+      if (bars.some((b) => b.x0 < c.x1 && b.x1 > c.x0)) continue;
+      // the bar: rows where the component is inked across nearly its whole width
+      const rowInk = (y: number): number => {
+        let k = 0;
+        for (let x = c.x0; x <= c.x1; x++) if (labels[y * W + x] === c.id) k++;
+        return k;
+      };
+      let by0 = -1;
+      let by1 = -1;
+      for (let y = c.y0; y <= c.y1; y++) {
+        if (rowInk(y) >= 0.85 * w) {
+          if (by0 < 0) by0 = y;
+          by1 = y;
+        }
+      }
+      // Hand-lettered jazz fonts draw the bar slightly slanted (rising a fraction of a space across its length), so no single
+      // row is inked across the width: accept a slanted band instead (see slantedBar).
+      const flatBar = h <= 2.4 * d && by0 >= 0 && by1 - by0 + 1 >= 0.35 * d && by1 - by0 + 1 <= 0.9 * d;
+      if (!flatBar) {
+        if (!slantedBar(c)) continue;
+        if (c.area > 0.85 * w * h) continue;
+        bars.push({ x0: c.x0, x1: c.x1, hbar: true, id: c.id });
+        continue;
+      }
+      // end caps: the first / last few columns are inked well above and below the bar
+      const capOk = (xa: number, xb: number): boolean => {
+        let up = 0;
+        let dn = 0;
+        for (let x = xa; x <= xb; x++) {
+          for (let y = c.y0; y < by0; y++) if (labels[y * W + x] === c.id) up = Math.max(up, by0 - y);
+          for (let y = by1 + 1; y <= c.y1; y++) if (labels[y * W + x] === c.id) dn = Math.max(dn, y - by1);
+        }
+        return up >= 0.35 * d && dn >= 0.35 * d;
+      };
+      const cw = Math.max(2, Math.round(0.2 * d));
+      if (!capOk(c.x0, c.x0 + cw) || !capOk(c.x1 - cw, c.x1)) continue;
+      // the cap columns are thin (a notehead / stem group would be wide and fat in the middle)
+      if (c.area > 0.85 * w * h) continue;
+      bars.push({ x0: c.x0, x1: c.x1, hbar: true });
+    }
+    bars.sort((a, b) => a.x0 - b.x0);
     for (const b of bars) {
       // skip bars made of a beam/tie: require the bar not to be attached to noteheads (few comps overlap its row band)
       let count = 1;
       let guessed = true;
       const cxm = (b.x0 + b.x1) / 2;
-      const frags = comps.filter((c) => c.y1 < topL - 0.3 * d && c.y0 > topL - 4.2 * d && hh(c) >= 0.5 * d && hh(c) <= 2.8 * d && ww(c) <= 1.9 * d && c.x0 >= b.x0 && c.x1 <= b.x1 && c.area >= 0.1 * d * d).sort((a, bb) => a.x0 - bb.x0);
+      // an H-bar's bold numeral may sit on the top staff line (it is then still above the bar's own cap)
+      const fragBottom = b.hbar ? topL + 0.6 * d : topL - 0.3 * d;
+      const frags = comps.filter((c) => c.y1 < fragBottom && c.y0 > topL - 4.2 * d && hh(c) >= 0.5 * d && hh(c) <= 3.4 * d && ww(c) <= 1.9 * d && c.x0 >= b.x0 && c.x1 <= b.x1 && c.area >= 0.1 * d * d).sort((a, bb) => a.x0 - bb.x0);
       // The digit is read from the RAW crop: ledger-line removal also eats the crossbar of a 4 (a 2 px bar of one glyph
       // width above the staff looks like a ledger line), which is what made it read as a 3.
       // a bold digit often arrives in two pieces (diagonal + stem of a 4, the halves of a 5 ...): fuse fragments that
@@ -1143,7 +1370,13 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
         let okRead = true;
         for (const c of group) {
           const w = c.x1 - c.x0 + 1;
-          const h = c.y1 - c.y0 + 1;
+          // an H-bar's numeral can sit on the top staff line: the raw crop then ends in the line's own rows, which are not part of the digit
+          const yEnd = b.hbar ? Math.min(c.y1, Math.floor(topL - t / 2 - 1.5)) : c.y1;
+          const h = yEnd - c.y0 + 1;
+          if (h < 3) {
+            okRead = false;
+            break;
+          }
           const g = new Uint8Array(w * h);
           for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) g[y * w + x] = src.d[(c.y0 + y) * W + c.x0 + x];
           const dg = classifyDigit(g, w, h);
@@ -1159,7 +1392,8 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
         }
       }
       multiRests.push({ x0: b.x0 + rx0, x1: b.x1 + rx0, count, guessed });
-      for (const c of comps) if (c.x0 >= b.x0 - 3 && c.x1 <= b.x1 + 3 && c.y0 <= midL && c.y1 >= midL && hh(c) <= 2.4 * d) mrIds.add(c.id);
+      if (b.id !== undefined) mrIds.add(b.id); // the slanted bar + caps is one tall component: keep it out of the notehead search
+      for (const c of comps) if (c.x0 >= b.x0 - 3 && c.x1 <= b.x1 + 3 && ((c.y0 <= midL && c.y1 >= midL) || (b.hbar && c.y0 >= topL && c.y1 <= botL)) && hh(c) <= 2.4 * d) mrIds.add(c.id);
     }
   }
 
@@ -1839,6 +2073,39 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
   }
   const barX = mergedBars;
 
+  // ---- leading barline: some engravings draw a barline right after the clef / key / time signature of every system. The
+  // cell in front of it holds only signature glyphs (or their fragments: flat bulbs read as small rests / heads, an unread
+  // cut-time sign), so it is not a measure: the barline becomes the start of the music. A cell with a stemmed / hollow head,
+  // a whole / half / quarter rest, a slash or a multi-measure rest past the signature area is a real (first) bar and is kept.
+  // A repeat sign |: (thick + thin line + dots) after a long signature prefix - three flats and a time signature - sits beyond
+  // 9.5 spaces from the staff start. Whether or not the time signature was read, its first (and a second) line hugs the end of
+  // the signatures: the cell in front of it is far narrower than a bar. So besides the 9.5 d rule, an empty cell that is
+  // narrower than 35% of the median bar of the system is not a measure either.
+  const medianCell = (): number => {
+    const w: number[] = [];
+    for (let i = 1; i < barX.length; i++) w.push(barX[i] - barX[i - 1]);
+    w.sort((a, b) => a - b);
+    return w.length > 0 ? w[Math.floor(w.length / 2)] : Infinity;
+  };
+  let musicStartOut = musicStart + rx0;
+  for (let guard = 0; guard < 3 && barX.length > 0; guard++) {
+    const b0 = barX[0];
+    const narrow = barX.length >= 3 && b0 - musicStartOut <= 0.35 * medianCell();
+    if (!((guard === 0 && (b0 - staff.left <= 9.5 * d || b0 - musicStartOut <= 2.0 * d)) || narrow)) break;
+    const solidFrom = staff.left + 5 * d;
+    const solid =
+      noteheads.some((h) => h.cx < b0 && h.cx >= solidFrom && h.cx >= musicStartOut && (h.stemId >= 0 || h.hollow)) ||
+      rests.some((r) => r.x1 < b0 && r.x0 >= solidFrom && r.x0 >= musicStartOut && r.kind !== 'eighth' && r.kind !== 'sixteenth') ||
+      slashes.some((sl) => sl.cx < b0 && sl.cx >= musicStartOut) ||
+      multiRests.some((m) => m.x0 < b0);
+    if (solid) break;
+    musicStartOut = b0 + 0.15 * d;
+    barX.shift();
+    doubledBar.shift();
+    for (let i = noteheads.length - 1; i >= 0; i--) if (noteheads[i].cx < b0) noteheads.splice(i, 1);
+    for (let i = rests.length - 1; i >= 0; i--) if (rests[i].x1 < b0) rests.splice(i, 1);
+  }
+
   // ---- courtesy key / time signatures after a double barline (mid staff) or after the last barline of the staff
   const signatureChanges: NonNullable<StaffSymbols['signatureChanges']> = [];
   barX.forEach((bx, k) => {
@@ -1848,6 +2115,15 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
     const winEnd = last ? lx(staff.right) - 0.2 * d : barX[k + 1] - rx0 - 0.5 * d;
     const start = xb + 0.5 * d;
     if (winEnd - start < 1.5 * d) return;
+    // The staff's closing barline can be missed (page edge): what follows the last barline found is then a whole bar, not a
+    // courtesy signature, and a rest or notehead there must not be read as a time-signature glyph. A courtesy signature is
+    // narrow: key + time signature take at most ~11 spaces and far less than a bar.
+    if (last && barX.length >= 3) {
+      const gaps: number[] = [];
+      for (let i = 1; i < barX.length; i++) gaps.push(barX[i] - barX[i - 1]);
+      gaps.sort((a, b) => a - b);
+      if (winEnd - xb > Math.max(11 * d, 0.55 * gaps[Math.floor(gaps.length / 2)])) return;
+    }
     // key: naturals (cancelling the old key => C major) are tried FIRST, as offset stroke pairs: readKeySignature would
     // take a pair of nearly level verticals for a sharp. Then flats / sharps by their stems.
     let fifths: number | undefined;
@@ -1899,7 +2175,7 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
   }
 
   // positions of rests must be after the prefix
-  const restsAfter = rests.filter((r) => r.x0 > musicStart + rx0 - 0.1 * d);
+  const restsAfter = rests.filter((r) => r.x0 > musicStartOut - 0.1 * d);
   noteheads.sort((a, b) => a.cx - b.cx);
   // remap stem ids after sorting is unnecessary: stemId indexes pageStems directly (unchanged by sort)
 
@@ -1908,7 +2184,7 @@ export function analyzeStaff(bin: Binary, staff: Staff, opts: AnalyzeOptions): S
     clefDetected,
     keyFifths,
     timeSig,
-    musicStart: musicStart + rx0,
+    musicStart: musicStartOut,
     heads: noteheads,
     stems: pageStems,
     rests: restsAfter,

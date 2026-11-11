@@ -18,17 +18,25 @@ import { encodeGrayPng } from './chordtext/png';
 import { otsuThreshold } from './preprocess';
 import { classifyNonChord, parseChordText, splitChordWord } from './chordtext/parse';
 import type { TextKind } from './chordtext/parse';
+import { classifyBeatGlyph, makeUnit, parseTempoText, toQuarterBpm, unitLabel, wordTempo } from './tempo';
+import type { TempoMark } from './tempo';
 
-export { parseChordText, classifyNonChord, splitChordWord } from './chordtext/parse';
+export { parseChordText, parseChordExact, classifyNonChord, splitChordWord } from './chordtext/parse';
 export type { ParsedChord, TextKind } from './chordtext/parse';
 
 export interface ChordLabel {
   measureIndex?: number;
   /** page x (center of the word) in the binary image's coordinates */
   x: number;
+  /** page x of the left edge of the word, when known exactly (text layer); otherwise estimated from `x` and the text length */
+  left?: number;
   text: string;
   chord: { root: string; quality: string; bass?: string };
   confidence: number;
+  /** OCR only: the symbol needed character repairs to parse (the raw read was not a chord as written) */
+  repaired?: boolean;
+  /** OCR only: tesseract's own 0..1 confidence for the word */
+  ocrConf?: number;
 }
 
 export interface TextWord {
@@ -57,6 +65,12 @@ export interface ExcludedText {
   x: number;
   text: string;
   kind: TextKind;
+  /** whitelist-pass OCR string of the same word (the chord pass), when available */
+  raw?: string;
+  /** word bounding box in binary-image coordinates */
+  box?: { x0: number; y0: number; x1: number; y1: number };
+  /** set when the text is a printed tempo mark (numeric, or a tempo word) */
+  tempo?: TempoMark;
 }
 
 export interface ChordTextResult {
@@ -64,6 +78,8 @@ export interface ChordTextResult {
   excluded: ExcludedText[];
   /** words found, with raw OCR text (for debugging) */
   raw: { x: number; text: string; confidence: number }[];
+  /** printed tempo marks found in the band (also present as `excluded[].tempo`), left to right */
+  tempos: TempoMark[];
 }
 
 export interface FindOptions {
@@ -73,6 +89,10 @@ export interface FindOptions {
   minX?: number;
   /** grey plane of the page (noisy scans): the chord band is re-thresholded locally from it and words are OCR'd from grey */
   grey?: GreyPlane;
+  /** height of the text band above the top staff line, in staff spaces (default 5; tempo marks are read from a taller band) */
+  bandUp?: number;
+  /** keep a lone "=" (two short stacked bars) as a word: a tempo mark "\u2669 = 120" is read as one phrase only if the sign is there */
+  keepEquals?: boolean;
 }
 
 interface Comp { x0: number; y0: number; x1: number; y1: number; area: number; touchesBottom: boolean }
@@ -135,7 +155,7 @@ function findTextWordsGrey(b: Binary, staff: Staff, opts: FindOptions): TextWord
   const ss = staff.staffSpace;
   const top = staff.lines[0];
   const bandBottom = Math.round(top - 0.5 * ss);
-  let bandTop = Math.round(top - 5 * ss);
+  let bandTop = Math.round(top - (opts.bandUp ?? 5) * ss);
   if (opts.limitTop !== undefined) bandTop = Math.max(bandTop, Math.ceil(opts.limitTop));
   bandTop = Math.max(0, bandTop);
   if (bandBottom - bandTop < 0.8 * ss) return [];
@@ -169,7 +189,7 @@ function findTextWordsBinary(b: Binary, staff: Staff, opts: FindOptions = {}): T
   const ss = staff.staffSpace;
   const top = staff.lines[0];
   const bandBottom = Math.round(top - 0.5 * ss);
-  let bandTop = Math.round(top - 5 * ss);
+  let bandTop = Math.round(top - (opts.bandUp ?? 5) * ss);
   if (opts.limitTop !== undefined) bandTop = Math.max(bandTop, Math.ceil(opts.limitTop));
   bandTop = Math.max(0, bandTop);
   if (bandBottom - bandTop < 0.8 * ss) return [];
@@ -235,7 +255,14 @@ function findTextWordsBinary(b: Binary, staff: Staff, opts: FindOptions = {}): T
     const gx0 = Math.min(...g.map((c) => c.x0)), gx1 = Math.max(...g.map((c) => c.x1));
     const gy0 = Math.min(...g.map((c) => c.y0)), gy1 = Math.max(...g.map((c) => c.y1));
     const ww = gx1 - gx0 + 1, hh = gy1 - gy0 + 1;
-    if (hh < 0.85 * ss || hh > 2.6 * ss) continue; // too small to be text / too tall
+    if (opts.keepEquals && g.length === 2 && hh >= 0.35 * ss && hh <= 1.3 * ss && ww >= 0.7 * ss && ww <= 2.2 * ss && g.every((c) => c.x1 - c.x0 + 1 >= 2.5 * (c.y1 - c.y0 + 1))) {
+      // an equals sign: two flat bars one above the other
+      const ink = new Uint8Array(ww * hh);
+      for (let y = 0; y < hh; y++) for (let x = 0; x < ww; x++) ink[y * ww + x] = b.data[(bandTop + gy0 + y) * b.width + x0 + gx0 + x];
+      out.push({ x0: x0 + gx0, x1: x0 + gx1, y0: bandTop + gy0, y1: bandTop + gy1, w: ww, h: hh, ink, boxed: false });
+      continue;
+    }
+    if (hh < 0.85 * ss || hh > 3.3 * ss) continue; // too small to be text / too tall (a chord with a raised flat "B\u266D7" is ~3.1 spaces)
     if (ww < 0.3 * ss) continue; // lone specks
     if (x0 + gx1 < minX) continue; // clef / key-signature area
     const ink = new Uint8Array(ww * hh);
@@ -478,7 +505,7 @@ async function ocrRetry(word: TextWord, staffSpace: number): Promise<{ text: str
   return out;
 }
 
-async function ocrFree(words: TextWord[], staffSpace: number): Promise<string[]> {
+export async function ocrFree(words: TextWord[], staffSpace: number): Promise<string[]> {
   const w = await getWorker();
   await w.setParameters({ tessedit_char_whitelist: '' });
   const out: string[] = [];
@@ -490,9 +517,70 @@ async function ocrFree(words: TextWord[], staffSpace: number): Promise<string[]>
   return out;
 }
 
+/** Union of several words of one text line as one word (ink and, when every word has one, the grey crop). */
+export function mergeWords(ws: TextWord[]): TextWord {
+  if (ws.length === 1) return ws[0];
+  const x0 = Math.min(...ws.map((w) => w.x0)), x1 = Math.max(...ws.map((w) => w.x1));
+  const y0 = Math.min(...ws.map((w) => w.y0)), y1 = Math.max(...ws.map((w) => w.y1));
+  const w = x1 - x0 + 1, h = y1 - y0 + 1;
+  const ink = new Uint8Array(w * h);
+  const allGrey = ws.every((q) => q.grey);
+  const grey = allGrey ? new Uint8Array(w * h).fill(255) : undefined;
+  for (const q of ws) for (let y = 0; y < q.h; y++) for (let x = 0; x < q.w; x++) {
+    const i = (q.y0 - y0 + y) * w + (q.x0 - x0 + x);
+    if (q.ink[y * q.w + x]) ink[i] = 1;
+    if (grey) grey[i] = Math.min(grey[i], q.grey![y * q.w + x]);
+  }
+  return { x0, x1, y0, y1, w, h, ink, boxed: false, ...(grey ? { grey } : {}) };
+}
+
+/** Group the words of the tempo band into text lines: same height (centres within 0.7 d) and a gap of at most 2.5 d (a word space). */
+export function tempoPhrases(words: TextWord[], d: number): TextWord[][] {
+  const sorted = [...words].sort((a, c) => a.x0 - c.x0);
+  const out: TextWord[][] = [];
+  for (const w of sorted) {
+    const home = out.find((ph) => {
+      const last = ph[ph.length - 1];
+      return w.x0 - last.x1 <= 3.2 * d && w.x0 >= last.x0 && Math.abs((w.y0 + w.y1) / 2 - (last.y0 + last.y1) / 2) <= 0.7 * d;
+    });
+    if (home) home.push(w);
+    else out.push([w]);
+  }
+  return out;
+}
+
 /** Full result: chords plus excluded rehearsal/tempo text and the raw OCR strings. */
-export async function readChordText(b: Binary, staff: Staff, opts: FindOptions & { minConfidence?: number } = {}): Promise<ChordTextResult> {
-  const result: ChordTextResult = { chords: [], excluded: [], raw: [] };
+export async function readChordText(b: Binary, staff: Staff, opts: FindOptions & { minConfidence?: number; tempoBand?: boolean } = {}): Promise<ChordTextResult> {
+  const result = await readChordBand(b, staff, opts);
+  if (opts.tempoBand !== false && !chordOcrUnavailable()) {
+    // tempo marks sit higher than chord symbols: look at the band 4.6..10 staff spaces above the staff as well
+    const d = staff.staffSpace;
+    const words = findTextWords(b, staff, { ...opts, bandUp: 10, keepEquals: true }).filter((w) => !w.boxed && (w.y0 + w.y1) / 2 < staff.lines[0] - 4.6 * d);
+    if (words.length) {
+      // The words of one printed phrase ("Fast swing  \u2669 = 156", "Ballad even 8ths \u2669 = 63") are split apart by the word-gap rule, which
+      // leaves "= 156" without its beat glyph and a bare number that is not a tempo: read each LINE of text as one phrase.
+      const phrases = tempoPhrases(words, d);
+      const merged = phrases.map(mergeWords);
+      const free = await ocrFree(merged, d);
+      phrases.forEach((ph, k) => {
+        // the word the beat glyph sits in front of: the "=" when the phrase has one (it is the glyph's right neighbour), else the last word
+        const eq = [...ph].reverse().find((q) => q.w <= 2.2 * d && q.h <= 1.3 * d);
+        const word = eq ?? ph[ph.length - 1];
+        const x = (merged[k].x0 + merged[k].x1) / 2;
+        const mark = readTempoMark(b, staff, word, x, [free[k]]);
+        if (!mark) return;
+        if (result.tempos.some((t) => Math.abs(t.x - x) < 2 * d && t.kind === mark.kind)) return;
+        result.tempos.push(mark);
+        result.excluded.push({ x, text: free[k], kind: 'tempo', box: { x0: word.x0, y0: word.y0, x1: word.x1, y1: word.y1 }, tempo: mark });
+      });
+      result.tempos.sort((p, q) => p.x - q.x);
+    }
+  }
+  return result;
+}
+
+async function readChordBand(b: Binary, staff: Staff, opts: FindOptions & { minConfidence?: number } = {}): Promise<ChordTextResult> {
+  const result: ChordTextResult = { chords: [], excluded: [], raw: [], tempos: [] };
   const words = findTextWords(b, staff, opts);
   if (words.length === 0) return result;
   const minConf = opts.minConfidence ?? 0.5;
@@ -543,7 +631,7 @@ export async function readChordText(b: Binary, staff: Staff, opts: FindOptions &
     }
     const p = parseChordText(text);
     if (p && p.confidence * Math.max(0.5, confidence) >= minConf * 0.6 && classifyNonChord(text) !== 'rehearsal') {
-      result.chords.push({ x, text: p.text, chord: p.chord, confidence: Math.min(1, p.confidence * (0.5 + 0.5 * confidence)) });
+      result.chords.push({ x, text: p.text, chord: p.chord, confidence: Math.min(1, p.confidence * (0.5 + 0.5 * confidence)), repaired: p.confidence < 1, ocrConf: confidence });
     } else {
       const parts = splitChordWord(text);
       if (parts) {
@@ -551,7 +639,7 @@ export async function readChordText(b: Binary, staff: Staff, opts: FindOptions &
         for (const part of parts) {
           const pp = parseChordText(part.text)!;
           const px = word.x0 + ((part.start + part.end) / 2 / len) * (word.x1 - word.x0);
-          result.chords.push({ x: px, text: pp.text, chord: pp.chord, confidence: pp.confidence * 0.6 });
+          result.chords.push({ x: px, text: pp.text, chord: pp.chord, confidence: pp.confidence * 0.6, repaired: pp.confidence < 1, ocrConf: confidence });
         }
       } else unparsed.push(i);
     }
@@ -560,11 +648,57 @@ export async function readChordText(b: Binary, staff: Staff, opts: FindOptions &
     const free = await ocrFree(unparsed.map((i) => toOcr[i]), staff.staffSpace);
     unparsed.forEach((i, k) => {
       const x = (toOcr[i].x0 + toOcr[i].x1) / 2;
-      result.excluded.push({ x, text: free[k], kind: classifyNonChord(free[k] || ocr[i].text) });
+      const word = toOcr[i];
+      const ex: ExcludedText = {
+        x, text: free[k], kind: classifyNonChord(free[k] || ocr[i].text), raw: ocr[i].text,
+        box: { x0: word.x0, y0: word.y0, x1: word.x1, y1: word.y1 },
+      };
+      const mark = readTempoMark(b, staff, word, x, [free[k], ocr[i].text]);
+      if (mark) { ex.tempo = mark; ex.kind = 'tempo'; result.tempos.push(mark); }
+      result.excluded.push(ex);
     });
   }
+  result.tempos.sort((p, q) => p.x - q.x);
   result.chords.sort((a, c) => a.x - c.x);
   return result;
+}
+
+/**
+ * Read a printed tempo mark from the OCR strings of one word: a numeric mark ("= 100-120", with the beat unit taken from the
+ * note glyph left of the '=') or a tempo word. Returns null for anything else.
+ */
+function readTempoMark(b: Binary, staff: Staff, word: TextWord, x: number, texts: string[]): TempoMark | null {
+  const d = staff.staffSpace;
+  for (const bare of [false, true]) for (const t of texts) {
+    const p = t ? parseTempoText(t, { allowBare: bare }) : null;
+    if (!p) continue;
+    if (bare && p.hasEquals) continue;
+    let unit = p.unit;
+    let conf = 0.8;
+    if (!unit) {
+      const bandBottom = Math.round(staff.lines[0] - 0.3 * d);
+      const g = classifyBeatGlyph(
+        b,
+        { x0: word.x0 - 3.5 * d, y0: word.y0 - 1.0 * d, x1: word.x1, y1: Math.min(bandBottom, word.y1 + 0.8 * d) },
+        d,
+        // a lone "=" word: the glyph is whatever stands LEFT of it (digits right of the sign must not be taken for the glyph)
+        word.w <= 2.2 * d && word.h <= 1.3 * d ? word.x0 : word.x0 + 3.5 * d,
+      );
+      if (g) { unit = makeUnit(g.name, g.dotted, 'glyph'); conf = g.confidence * 0.95; }
+      else if (bare) continue; // a bare number is only a tempo when a note glyph stands in front of it
+      else { unit = makeUnit('quarter', false, 'assumed'); conf = 0.45; }
+    }
+    const printed = p.hi !== undefined ? `${p.lo}-${p.hi}` : `${p.lo}`;
+    return {
+      x, text: t, kind: 'numeric', bpm: toQuarterBpm(p.lo, p.hi, unit), printed: { lo: p.lo, hi: p.hi ?? p.lo }, unit, confidence: conf,
+      description: `${unitLabel(unit)} = ${printed}`,
+    };
+  }
+  for (const t of texts) {
+    const w = t ? wordTempo(t) : null;
+    if (w) return { x, text: t, kind: 'word', bpm: w.bpm, confidence: 0.3, description: `'${t.trim()}' (${w.name})` };
+  }
+  return null;
 }
 
 /** Chord labels above `staff`, left to right. Returns [] (never throws) when OCR is unavailable. */

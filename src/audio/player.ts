@@ -1,5 +1,5 @@
 /** Web Audio sampled-guitar player with lookahead scheduling. Browser only; do not import in unit tests except for pure helpers. */
-import { guitarTrack, ticksToSeconds, timeSignatureAt } from '../core';
+import { guitarTrack, pulseTicks, ticksToSeconds, timeSignatureAt } from '../core';
 import type { GuitarConfig, Score, Tuning } from '../core';
 import { loadSamples, nearestSample } from './samples';
 import { buildChordEvents } from './chordEvents';
@@ -107,8 +107,8 @@ export function buildEvents(
     let guard = 0;
     while (tick <= limit && guard++ < 100000) {
       const ts = timeSignatureAt(score, tick);
-      const beat = (score.ppq * 4) / ts.denominator;
-      const measure = beat * ts.numerator;
+      const beat = pulseTicks(score.ppq, ts.denominator);
+      const measure = (score.ppq * 4 * ts.numerator) / ts.denominator;
       const rel = (tick - ts.tick) % measure;
       events.push({ t: ticksToSeconds(score, tick), dur: 0.02, pitch: 0, gain: 1, click: rel === 0 ? 'accent' : 'normal' });
       tick += beat;

@@ -4,6 +4,7 @@ import { createEmptyScore } from '../src/core';
 const recognizeScore = vi.fn();
 vi.mock('../src/omr', () => ({
   renderPdfPages: vi.fn(async () => [{}]),
+  renderPdfPagesWithText: vi.fn(async () => ({ canvases: [{}], textItems: [[]] })),
   imageToCanvas: vi.fn(async () => ({})),
   recognizeScore: (...a: unknown[]) => recognizeScore(...a),
 }));

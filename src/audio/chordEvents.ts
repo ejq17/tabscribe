@@ -1,5 +1,5 @@
 /** Pure builder for strummed chord-accompaniment events (no Web Audio). */
-import { guitarTrack, measuresOf, ticksToSeconds, timeSignatureAt, STANDARD_TUNING } from '../core';
+import { guitarTrack, measuresOf, pulseTicks, ticksToSeconds, timeSignatureAt, STANDARD_TUNING } from '../core';
 import type { Measure, Score, Tuning } from '../core';
 import { chordDiagram, simplifyChordName } from '../chords/shapes';
 import type { ChordEvent } from '../chords/detect';
@@ -82,7 +82,7 @@ export function buildChordEvents(
     while (noteIdx < noteStarts.length && noteStarts[noteIdx] < m.startTick) noteIdx++;
     const hasNotes = noteIdx < noteStarts.length && noteStarts[noteIdx] < m.endTick;
     const light = hasNotes && !slash.has(m.startTick);
-    const beat = (score.ppq * 4) / m.timeSignature.denominator;
+    const beat = pulseTicks(score.ppq, m.timeSignature.denominator);
     let prev: ChordEvent | null = null;
     for (let t = m.startTick; t < m.endTick - 1e-6; t += beat) {
       const c = activeAt(t);

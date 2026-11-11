@@ -142,6 +142,8 @@ export interface StaffLayoutResult {
   measures: RhythmEvent[][];
   /** per output measure: the bar holds chord-slash notation (>= 2 slashes, no notes) */
   slash: boolean[];
+  /** per output measure: how many slash marks the bar holds (0 when none / not a slash bar); a chord-slash bar's meter evidence */
+  slashN: number[];
   /** signature changes after a double barline (mid-staff or trailing courtesy) */
   changes: SigChange[];
   /** a trailing cell that held only signature junk was dropped (it is not a measure) */
@@ -190,22 +192,28 @@ export function staffLayout(sym: StaffSymbols, stems: StemInfo[], d: number, ppq
   const closed = nb > 0 && sym.barlines[nb - 1] >= right - 2.5 * d;
   let n = slots.length;
   let trailingCourtesy = false;
-  if (closed || slots[n - 1].length === 0) n--;
-  else if (nb > 0 && !slots[n - 1].some((e) => e.kind === 'cluster')) {
-    // an unterminated last cell with no notes: a courtesy signature (declared, or narrow compared with a real bar)
-    const declared = sigs.some((c) => c.barline >= nb - 1);
+  // The last cell can be a real bar whose closing barline was not found (it sits on the page / crop edge): slash marks or a
+  // multi-measure rest in it are bar content, so it is kept even though no note cluster / rest sits in it.
+  const lastHasBar = slashCount[n - 1] >= 2 || multi.has(n - 1);
+  const lastClusters = slots[n - 1].filter((e) => e.kind === 'cluster').length;
+  const declaredCourtesy = sigs.some((c) => c.barline >= nb - 1);
+  if (closed || (slots[n - 1].length === 0 && !lastHasBar)) n--;
+  else if (nb > 0 && !lastHasBar && (lastClusters === 0 || (declaredCourtesy && lastClusters <= 3))) {
+    // an unterminated last cell with no notes: a courtesy signature (declared, or narrow compared with a real bar). A declared
+    // courtesy signature whose last glyph (a cut-time sign, a "C") was read as one to three noteheads still counts, if narrow.
     const widths: number[] = [];
     for (let i = 1; i < nb; i++) widths.push(sym.barlines[i] - sym.barlines[i - 1]);
     widths.sort((a, b) => a - b);
     const median = widths.length > 0 ? widths[Math.floor(widths.length / 2)] : 0;
     const w = right - sym.barlines[nb - 1];
-    if (declared || (Number.isFinite(w) && w <= Math.max(9 * d, 0.55 * median))) {
+    if (lastClusters === 0 ? declaredCourtesy || (Number.isFinite(w) && w <= Math.max(9 * d, 0.55 * median)) : Number.isFinite(w) && w <= Math.max(9 * d, 0.55 * median)) {
       n--;
       trailingCourtesy = true;
     }
   }
   const out: RhythmEvent[][] = [];
   const slash: boolean[] = [];
+  const slashN: number[] = [];
   const outStart: number[] = [];
   for (let k = 0; k < n; k++) {
     outStart[k] = out.length;
@@ -216,14 +224,20 @@ export function staffLayout(sym: StaffSymbols, stems: StemInfo[], d: number, ppq
       isSlash = true;
     }
     const reps = multi.get(k);
-    if (reps && reps > 1 && ev.length === 0 && !isSlash) {
+    // A measure cannot hold a multi-measure rest AND music: one or two stray "noteheads" inside the cell of a rest whose count was
+    // read (a double-barline strand, a text fragment, a mark's blob) do not cancel it. Real rests / three or more heads do.
+    const strays = ev.length <= 2 && ev.every((e) => e.kind === 'cluster');
+    if (reps && reps > 1 && (ev.length === 0 || strays) && !isSlash) {
       for (let r = 0; r < reps; r++) {
         out.push([]);
         slash.push(false);
+        slashN.push(0);
       }
     } else {
       out.push(ev);
       slash.push(isSlash);
+      // a bar with a rest among its slashes ("z / / /") does not have one slash per beat: no meter evidence
+      slashN.push(isSlash && slots[k].length === 0 ? slashCount[k] : 0);
     }
   }
   const changes: SigChange[] = [];
@@ -232,7 +246,7 @@ export function staffLayout(sym: StaffSymbols, stems: StemInfo[], d: number, ppq
     const m = outStart[c.barline + 1] ?? out.length;
     changes.push({ measure: m, timeSig: c.timeSig, keyFifths: c.keyFifths, ...(c.unreadable ? { unreadable: true } : {}) });
   }
-  return { measures: out, slash, changes, trailingCourtesy };
+  return { measures: out, slash, slashN, changes, trailingCourtesy };
 }
 
 export interface Layout {

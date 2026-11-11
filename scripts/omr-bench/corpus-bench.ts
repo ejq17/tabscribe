@@ -15,7 +15,7 @@ import { configureChordOcr, disposeChordOcr } from '../../src/omr/chordtext';
 import type { RawImage } from '../../src/omr/types';
 import type { Score } from '../../src/core/score';
 import { degradeScan } from '../../tests/fixtures/omr/corpus/degrade';
-import { dumpMeasures, sanitizeXml, extractTruthMeasures, mean, scorePiece, type PieceMetrics } from './metrics';
+import { dumpMeasures, sanitizeXml, extractTruthMeasures, mean, scorePiece, rootPitchClass, normalizeQuality, type PieceMetrics } from './metrics';
 
 // src/importers/midi.ts does `import { Midi } from '@tonejs/midi'`, which node's native ESM linker rejects (CJS build);
 // resolve it to the package's ESM build instead. Must be registered before the dynamic import below.
@@ -25,6 +25,7 @@ const { importMusicXml } = await import('../../src/importers/musicxml');
 const dom = new JSDOM('');
 (globalThis as any).DOMParser = dom.window.DOMParser;
 
+const args = process.argv.slice(2);
 const CORPUS = resolve(import.meta.dirname ?? '.', '../../tests/fixtures/omr/corpus');
 
 export async function loadPages(dir: string): Promise<RawImage[]> {
@@ -64,6 +65,7 @@ interface Row {
   staves: number;
   ms: number;
   crash?: string;
+  labels?: string;
 }
 
 async function runOne(id: string, degrade: boolean, seed: number, outDir: string, chords = false): Promise<Row> {
@@ -83,6 +85,14 @@ async function runOne(id: string, degrade: boolean, seed: number, outDir: string
     row.staves = staves; row.ms = ms;
     row.warnings = (score.meta.warnings ?? []).length;
     row.metrics = scorePiece(truth, score, extras);
+    if (chords) {
+      // label-level view of the OCR reads: kept (meta.omrChords) vs withheld by the reliability rule (meta.omrChordsSuppressed)
+      const okOf = (c: any) => (extras.measures[c.measure]?.chords ?? []).some((t) => rootPitchClass(t.root) === rootPitchClass(c.chord.root) && normalizeQuality(t.quality) === normalizeQuality(c.chord.quality) && (t.bass ? rootPitchClass(t.bass) : undefined) === (c.chord.bass ? rootPitchClass(c.chord.bass) : undefined));
+      const kept = (score.meta.omrChords ?? []).filter((c) => c.ocrConf !== undefined), cut = (score.meta.omrChordsSuppressed ?? []).filter((c) => c.ocrConf !== undefined);
+      const n = (l: any[], ok: boolean) => l.filter((c) => okOf(c) === ok).length;
+      row.labels = `OCR labels: kept ${kept.length} (${n(kept, true)} correct, ${n(kept, false)} wrong), withheld ${cut.length} (${n(cut, true)} correct lost, ${n(cut, false)} wrong removed)`;
+      if (args.includes('--chord-dump')) for (const c of [...kept.map((c) => ({ c, k: 'kept' })), ...cut.map((c) => ({ c, k: 'SUPPRESSED' }))]) console.log(`  CH ${id} m${c.c.measure + 1} ${c.c.text} ocr=${c.c.ocrConf!.toFixed(2)} ${c.c.repaired ? 'REPAIRED' : 'clean'} ${okOf(c.c) ? 'OK' : 'WRONG'} ${c.k}`);
+    }
     writeFileSync(join(outDir, `${id}.${mode}.txt`), [
       `# ${id} (${mode}) staves=${staves} measures=${row.metrics.measures.recognized}/${row.metrics.measures.truth} pitchF1=${row.metrics.pitch.f1.toFixed(3)}`,
       ...dumpMeasures(score), '', '## truth', ...dumpMeasures(truth, extras.measures.length || undefined), '', '## warnings', ...(score.meta.warnings ?? []),
@@ -120,7 +130,6 @@ function averages(rows: Row[], mode: string) {
 }
 
 async function main() {
-  const args = process.argv.slice(2);
   const opt = (n: string) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : undefined; };
   const ids = (opt('--ids')?.split(',') ?? readdirSync(CORPUS).filter((d) => existsSync(join(CORPUS, d, 'score.musicxml')))).sort();
   const withDegrade = args.includes('--degrade');
@@ -135,6 +144,7 @@ async function main() {
   for (const id of ids) {
     for (const deg of withDegrade ? [false, true] : [false]) {
       const r = await runOne(id, deg, seed, outDir, withChords);
+      if (r.labels) console.log(`  ${id} ${r.mode}: ${r.labels}`);
       rows.push(r);
       if (withChords && r.metrics) { const c = r.metrics.chords; console.log(`  chords ${id} ${r.mode}: exact=${pct(c.exact)} root=${pct(c.root)} (${c.measuresWithChords} measures)`); for (const x of c.misses) console.log(`    m${x.measure}: truth=${x.truth} read=${x.read}${x.rootOk ? ' (root ok)' : ''}`); }
       console.log(r.crash ? `CRASH ${id} ${r.mode}\n${r.crash}` : `${id} ${r.mode}: pitchF1=${pct(r.metrics!.pitch.f1)} measures=${r.metrics!.measures.recognized}/${r.metrics!.measures.truth} (${(r.ms / 1000).toFixed(1)}s)`);

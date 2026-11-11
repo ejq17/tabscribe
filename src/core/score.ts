@@ -122,6 +122,9 @@ export interface OmrChord {
   text: string;
   chord: { root: string; quality: string; bass?: string };
   confidence: number;
+  /** OCR diagnostics (absent for text-layer and Claude-read chords) */
+  repaired?: boolean;
+  ocrConf?: number;
 }
 
 /** One barline-delimited cell of an OMR system (see `meta.omrSystems`). Page pixel coordinates are those of the canvas given to `recognizeScore`. */
@@ -149,6 +152,8 @@ export interface OmrSystem {
   firstMeasure: number;
   measureCount: number;
   cells: OmrSystemCell[];
+  /** the chord symbols of this system were read from the PDF text layer (exact: not OCR, never replaced by the Claude reader) */
+  textLayer?: boolean;
 }
 
 /** A YouTube video attached to a tab; `startSec` is the video time that matches the start (tick 0) of the tab. */
@@ -168,6 +173,8 @@ export interface ScoreMeta {
   warnings?: string[];
   /** OMR: chord symbols read from the page; preferred over chords inferred from notes */
   omrChords?: OmrChord[];
+  /** OMR: OCR chord labels withheld because the page's chord font could not be read reliably (debugging; never used as chords) */
+  omrChordsSuppressed?: OmrChord[];
   /** OMR: per-system page geometry (see `OmrSystem`) */
   omrSystems?: OmrSystem[];
   /** OMR: bars written in slash / chord-hit notation (no notes) */

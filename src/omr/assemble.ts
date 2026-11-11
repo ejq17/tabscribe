@@ -4,7 +4,10 @@ import { detectStaves, lineY } from './staves';
 import { analyzeStaff } from './symbols';
 import { pitchMeasure } from './pitch';
 import { layoutMeasure, quantizeTicks, rawMeasureTotal, snapStandardTicks, staffLayout, type RhythmEvent, type SigChange } from './rhythm';
-import { chordOcrUnavailable, detectChordLabels, disposeChordOcr, resetChordOcrState, type ChordLabel } from './chordtext';
+import { chordOcrUnavailable, disposeChordOcr, readChordText, resetChordOcrState, type ChordLabel } from './chordtext';
+import type { TempoMark } from './tempo';
+import { unreliableChordPages } from './chordreliability';
+import { analyzeTextLayer, type PdfTextItem } from './textlayer';
 import type { Binary, OmrBox, OmrInstrument, PageResult, RawImage, RecognizeOptions, Staff, StaffSymbols } from './types';
 
 /** Run preprocessing, staff detection and symbol analysis on one page image. Pure; no DOM. */
@@ -181,22 +184,53 @@ function chordLimitTop(staves: Staff[], i: number): number {
  * `page.chordLabels` (index = system). Never throws: on any failure the page simply has no chord labels.
  * Requires `page.binary` (set by `analyzePage`).
  */
-export async function readPageChords(page: PageResult, opts: { onProgress?: RecognizeOptions['onProgress'] } = {}): Promise<ChordLabel[][]> {
+export async function readPageChords(
+  page: PageResult,
+  opts: { onProgress?: RecognizeOptions['onProgress']; textItems?: PdfTextItem[] } = {},
+): Promise<ChordLabel[][]> {
   const out: ChordLabel[][] = page.systems.map(() => []);
   page.chordLabels = out;
-  if (!page.binary) return out;
-  for (let s = 0; s < page.systems.length; s++) {
-    const first = page.systems[s][0];
-    if (first === undefined) continue;
-    if (chordOcrUnavailable()) break; // OCR failed or timed out earlier in this run: skip the rest
+  const tempos: TempoMark[][] = page.systems.map(() => []);
+  page.tempoMarks = tempos;
+  // PDF text layer first: exact symbols, no OCR. A page whose text layer has nothing chord-like, and a system whose chord band holds
+  // text that cannot be decoded, are read by OCR as before.
+  let tl: ReturnType<typeof analyzeTextLayer> | undefined;
+  if (opts.textItems && opts.textItems.length > 0) {
     try {
-      out[s] = await detectChordLabels(page.binary, page.staves[first], {
+      tl = analyzeTextLayer(opts.textItems, page);
+      if (tl.hasChords || tl.hasNumbers) page.textLayer = tl.systems;
+      else tl = undefined;
+    } catch {
+      tl = undefined;
+    }
+  }
+  page.textChords = page.systems.map(() => false);
+  let ocrDead = false;
+  for (let s = 0; s < page.systems.length; s++) {
+    const t = tl?.systems[s];
+    if (t && tl!.hasChords && t.reliable) {
+      out[s] = t.chords;
+      tempos[s] = t.tempos;
+      page.textChords[s] = true;
+      continue;
+    }
+    const first = page.systems[s][0];
+    if (first === undefined || !page.binary || ocrDead) continue;
+    if (chordOcrUnavailable()) {
+      ocrDead = true; // OCR failed or timed out earlier in this run: skip the rest
+      continue;
+    }
+    try {
+      const r = await readChordText(page.binary, page.staves[first], {
         limitTop: chordLimitTop(page.staves, first),
         grey: page.grey ? { data: page.grey, width: page.binary.width, height: page.binary.height } : undefined,
       });
+      out[s] = r.chords;
+      tempos[s] = r.tempos;
     } catch {
       out[s] = [];
     }
+    if (t && t.tempos.length > 0) tempos[s] = t.tempos;
     opts.onProgress?.({ stage: 'Reading chord symbols', fraction: (s + 1) / page.systems.length, page: page.index });
   }
   return out;
@@ -328,6 +362,134 @@ export function alignBarlines(syms: StaffSymbols[], spaces: number[]): StaffSymb
   });
 }
 
+interface SysPre {
+  page: PageResult;
+  sys: number[];
+  sysNo: number;
+  symsOf: StaffSymbols[];
+}
+
+/**
+ * Printed bar numbers (PDF text layer) make the measure timeline exact: a multi-measure rest stands for as many bars as the
+ * printed numbers jump over it (or the count printed above its H-bar), and a bar-number jump over a cell the image reading
+ * did not see as a multi-rest becomes one. Mutates `pre[i].symsOf` (copies). Numbers that are not strictly increasing across
+ * the score are ignored, so a stray digit in the text layer cannot corrupt the timeline.
+ */
+function applyPrintedNumbers(pre: SysPre[]): void {
+  interface Info {
+    cellNum: (number | undefined)[];
+    counts: Map<number, number>;
+    first?: number;
+  }
+  const infos: (Info | undefined)[] = pre.map((p) => {
+    const tl = p.page.textLayer?.[p.sysNo];
+    if (!tl || tl.numbers.length === 0) return undefined;
+    const lead = p.symsOf[0];
+    const st = p.page.staves[p.sys[0]];
+    const d = st.staffSpace;
+    const bars = lead.barlines;
+    const slotOf = (x: number) => {
+      let k = 0;
+      for (let i = 0; i < bars.length; i++) if (x >= bars[i] - 0.3 * d) k = i + 1;
+      return k;
+    };
+    const cellNum: (number | undefined)[] = new Array(bars.length + 1).fill(undefined);
+    const counts = new Map<number, number>();
+    const mrs = lead.multiRests ?? [];
+    for (const num of tl.numbers) {
+      const mr = num.zone === 'above' ? mrs.find((m) => num.xc >= m.x0 - 0.5 * d && num.xc <= m.x1 + 0.5 * d) : undefined;
+      if (mr) {
+        if (num.n >= 2 && num.n <= 99) counts.set(slotOf((mr.x0 + mr.x1) / 2), num.n);
+        continue;
+      }
+      const k = slotOf(num.x);
+      if (cellNum[k] === undefined) cellNum[k] = num.n;
+    }
+    return { cellNum, counts, first: cellNum.find((v) => v !== undefined) };
+  });
+  // keep only a strictly increasing sequence of numbers (score order)
+  let prev = 0;
+  for (const inf of infos) {
+    if (!inf) continue;
+    inf.cellNum = inf.cellNum.map((v) => {
+      if (v === undefined || v <= prev) return undefined;
+      prev = v;
+      return v;
+    });
+    inf.first = inf.cellNum.find((v) => v !== undefined);
+  }
+  pre.forEach((p, i) => {
+    const inf = infos[i];
+    if (!inf) return;
+    const lead = p.symsOf[0];
+    const st = p.page.staves[p.sys[0]];
+    const d = st.staffSpace;
+    const bars = lead.barlines;
+    const nCells = bars.length + 1;
+    // anchor after this system: first printed number of a following system
+    let nextAnchor: number | undefined;
+    for (let j = i + 1; j < infos.length; j++) {
+      const f = infos[j]?.first;
+      if (f !== undefined) {
+        nextAnchor = f;
+        break;
+      }
+      if (!infos[j]) break;
+    }
+    const cellStart = (k: number) => (k === 0 ? lead.musicStart : bars[k - 1]);
+    const cellEnd = (k: number) => (k < bars.length ? bars[k] : (lead.staffRight ?? p.page.staves[p.sys[0]].right));
+    const slotOf = (x: number) => {
+      let k = 0;
+      for (let b = 0; b < bars.length; b++) if (x >= bars[b]) k = b + 1;
+      return k;
+    };
+    const imageCount = new Map<number, number>();
+    for (const m of lead.multiRests ?? []) imageCount.set(slotOf((m.x0 + m.x1) / 2), m.count);
+    const noteIn = (k: number) => lead.heads.some((h) => h.cx >= cellStart(k) && h.cx < cellEnd(k)) || (lead.slashes ?? []).some((sl) => sl.cx >= cellStart(k) && sl.cx < cellEnd(k));
+    // the printed number of every cell, deduced forward from the last printed one across multi-rests
+    const nums: (number | undefined)[] = inf.cellNum.slice();
+    const decided = new Map<number, number>();
+    for (let k = 0; k < nCells; k++) {
+      // contiguous next cell only: a jump spanning several unnumbered cells cannot be assigned to one of them
+      const nextCellNum = k + 1 < nCells ? nums[k + 1] : nextAnchor;
+      const here = nums[k];
+      const isMr = imageCount.has(k) || inf.counts.has(k);
+      if (here !== undefined && nextCellNum !== undefined) {
+        const jump = nextCellNum - here;
+        if (isMr && jump >= 2 && jump <= 99) decided.set(k, jump);
+        else if (!isMr && jump >= 2 && jump <= 99 && !noteIn(k)) decided.set(k, jump);
+        else if (isMr && jump === 1 && !inf.counts.has(k)) decided.set(k, 1);
+      } else if (isMr && inf.counts.has(k)) decided.set(k, inf.counts.get(k)!);
+    }
+    // a single multi-rest in a system with only its first number known: the system total decides it
+    if (decided.size === 0 && inf.first !== undefined && nextAnchor !== undefined && inf.cellNum.filter((v) => v !== undefined).length <= 1) {
+      const mrSlots = [...imageCount.keys()];
+      const extra = nextAnchor - inf.first - nCells;
+      if (mrSlots.length === 1 && extra >= 1 && extra <= 98) decided.set(mrSlots[0], extra + 1);
+    }
+    // digits printed above an H-bar win when the bar numbers do not say otherwise
+    for (const [k, c] of inf.counts) if (!decided.has(k)) decided.set(k, c);
+    if (decided.size === 0) return;
+    p.symsOf = p.symsOf.map((sym) => {
+      const list = (sym.multiRests ?? []).map((m) => ({ ...m }));
+      for (const [k, c] of decided) {
+        const have = list.find((m) => slotOf((m.x0 + m.x1) / 2) === k);
+        if (c < 2) {
+          if (have) have.count = 1;
+          continue;
+        }
+        if (have) {
+          have.count = c;
+          have.guessed = false;
+        } else if (!sym.heads.some((h) => h.cx >= cellStart(k) && h.cx < cellEnd(k))) {
+          list.push({ x0: cellStart(k) + 0.5 * d, x1: cellEnd(k) - 0.5 * d, count: c, guessed: false });
+        }
+      }
+      return { ...sym, multiRests: list.sort((a, b) => a.x0 - b.x0) };
+    });
+  });
+}
+
 /** Build a Score from analyzed pages. */
 export function assembleScore(pages: PageResult[], ppq = 480, opts: { instrument?: OmrInstrument } = {}): Score {
   const score = createEmptyScore({ source: 'omr' });
@@ -343,39 +505,81 @@ export function assembleScore(pages: PageResult[], ppq = 480, opts: { instrument
     measures: Map<number, RhythmEvent[][]>;
     /** per staff: measure cells that hold chord-slash notation */
     slash: Map<number, boolean[]>;
+    slashN: Map<number, number[]>;
     /** signature changes after double barlines (mid-system: measure < count; trailing: measure >= count) */
     changes: SigChange[];
     count: number;
     /** chord labels placed by measure offset within the system; `frac` = position within the measure (0..1) */
     chords: Map<number, { label: ChordLabel; frac: number }[]>;
+    /** printed tempo marks placed by measure offset (via pseudo chord labels keyed in `markOf`) */
+    tempos: Map<number, { label: ChordLabel; frac: number }[]>;
+    firstOfScore: boolean;
     /** barline-aligned symbols of the first staff (geometry for `meta.omrSystems`) */
     lead?: StaffSymbols;
+    /** key signature counted from the PDF text layer's accidental glyphs (preferred over the image reading) */
+    textKey?: number;
+    /** the chord labels came from the PDF text layer */
+    textChords?: boolean;
   }
+  const markOf = new Map<ChordLabel, TempoMark>();
   const sysInfos: SysInfo[] = [];
-  for (const page of pages) {
-    page.systems.forEach((sys, sysNo) => {
+  const pre = pages.flatMap((page) =>
+    page.systems.map((sys, sysNo) => ({
+      page,
+      sys,
+      sysNo,
+      symsOf: alignBarlines(sys.map((si) => page.symbols[si]), sys.map((si) => page.staves[si].staffSpace)),
+    })),
+  );
+  applyPrintedNumbers(pre);
+  for (const { page, sys, sysNo, symsOf } of pre) {
+    {
       const measures = new Map<number, RhythmEvent[][]>();
       const slash = new Map<number, boolean[]>();
+      const slashN = new Map<number, number[]>();
       let changes: SigChange[] = [];
       let count = 0;
-      const symsOf = alignBarlines(sys.map((si) => page.symbols[si]), sys.map((si) => page.staves[si].staffSpace));
       for (let sp = 0; sp < sys.length; sp++) {
         const si = sys[sp];
         const staff = page.staves[si];
         const lay = staffLayout(symsOf[sp], page.symbols[si].stems, staff.staffSpace, ppq);
         measures.set(si, lay.measures);
         slash.set(si, lay.slash);
+        slashN.set(si, lay.slashN);
         if (changes.length === 0) changes = lay.changes;
         count = Math.max(count, lay.measures.length);
       }
       const chords = sys.length > 0 ? placeChords(page.chordLabels?.[sysNo] ?? [], symsOf[0], page.staves[sys[0]].staffSpace, count) : new Map();
-      if (count > 0 || sys.length > 0) sysInfos.push({ page, staffIds: sys, measures, slash, changes, count, chords, lead: symsOf[0] });
-    });
+      const marks = page.tempoMarks?.[sysNo] ?? [];
+      const pseudo = marks.map((m): ChordLabel => {
+        const l: ChordLabel = { x: m.x, text: '', chord: { root: 'C', quality: '' }, confidence: m.confidence };
+        markOf.set(l, m);
+        return l;
+      });
+      const tempos = sys.length > 0 && pseudo.length ? placeChords(pseudo, symsOf[0], page.staves[sys[0]].staffSpace, count) : new Map();
+      if (count > 0 || sys.length > 0) {
+        sysInfos.push({ page, staffIds: sys, measures, slash, slashN, changes, count, chords, tempos, firstOfScore: sysInfos.length === 0, lead: symsOf[0], textKey: page.textLayer?.[sysNo]?.keyFifths, textChords: !!page.textChords?.[sysNo] });
+      }
+    }
   }
   const totalMeasures = sysInfos.reduce((s, x) => s + x.count, 0);
 
   // Key signatures: vote per system, then only accept a change when two consecutive systems agree on it
-  const sysKey = sysInfos.map((si) => modeOf(si.staffIds.map((i) => si.page.symbols[i].keyFifths)));
+  // A system whose clef was not found has no reliable key reading either (the key follows the clef; it reads as 0): carry the
+  // key of the system before it. A system that starts with a printed time signature starts a new piece / section (exercise
+  // books, medleys, a meter change): its own key is taken at face value. A continuation line prints only clef + key.
+  const sysKeyRaw: (number | undefined)[] = sysInfos.map((si) =>
+    si.textKey ?? (si.staffIds.some((i) => si.page.symbols[i].clefDetected) ? modeOf(si.staffIds.map((i) => si.page.symbols[i].keyFifths)) : undefined),
+  );
+  const startsPiece = sysInfos.map((si, i) => i > 0 && si.staffIds.some((j) => !!si.page.symbols[j].timeSig || !!si.page.symbols[j].timeSigUnreadable));
+  const sysKey: number[] = [];
+  {
+    let carry = sysKeyRaw.find((k) => k !== undefined) ?? 0;
+    sysKeyRaw.forEach((k) => {
+      if (k !== undefined) carry = k;
+      sysKey.push(carry);
+    });
+  }
   // a courtesy key signature at the end of a system is what the NEXT system starts in
   const forcedKey: (number | undefined)[] = sysInfos.map(() => undefined);
   sysInfos.forEach((si, i) => {
@@ -385,11 +589,11 @@ export function assembleScore(pages: PageResult[], ppq = 480, opts: { instrument
   const effKey: number[] = [];
   {
     let cur = sysKey[0] ?? 0;
-    if (sysKey.length >= 3 && sysKey[0] !== sysKey[1] && sysKey[1] === sysKey[2]) cur = sysKey[1];
+    if (sysKey.length >= 3 && sysKey[0] !== sysKey[1] && sysKey[1] === sysKey[2] && !startsPiece[1]) cur = sysKey[1];
     sysKey.forEach((f, i) => {
       const forced = forcedKey[i];
       if (forced !== undefined) cur = forced;
-      else if (i > 0 && f !== cur && sysKey[i + 1] === f) cur = f;
+      else if (i > 0 && f !== cur && (startsPiece[i] || sysKey[i + 1] === f)) cur = f;
       effKey.push(cur);
     });
   }
@@ -408,6 +612,9 @@ export function assembleScore(pages: PageResult[], ppq = 480, opts: { instrument
   let measureNo = 0;
   let curTs = { numerator: 4, denominator: 4 };
   let tsKnown = false;
+  // the meter in force came from a common / cut-time sign or from digits that were read cleanly; digits flagged unreadable (a half-read
+  // glyph) or an inferred meter can still be revised by the bar lengths
+  let meterTrusted = true; // (no printed signature at all is the "first system only" case of the loose guess, not an untrusted one)
   const carryByStaffKey = new Map<string, Map<number, number>>();
   const lastClef = new Map<number, 'treble' | 'bass'>();
   let lastKey = Number.NaN;
@@ -416,7 +623,12 @@ export function assembleScore(pages: PageResult[], ppq = 480, opts: { instrument
   let slashMeasures = 0;
   const slashList: { index: number; tick: number; length: number }[] = [];
   const chordList: OmrChordEntry[] = [];
+  const suppressedList: OmrChordEntry[] = [];
+  // OCR chord symbols on a page whose font the reader cannot handle are withheld (the app then infers chords from the notes)
+  const badChordPages = unreliableChordPages(pages.map((p) => ({ page: p.index, labels: (p.chordLabels ?? []).filter((_, s) => !p.textChords?.[s]).flat() })));
+  const suppressedPages = new Set<number>();
   const systemGeoms: OmrSystem[] = [];
+  const tempoHits: { mark: TempoMark; tick: number; first: boolean }[] = [];
   let pendingTie = new Map<string, { midi: number; step: number }>();
   let pendingSig: SigChange | undefined;
   let unmatchedTies = 0;
@@ -460,7 +672,10 @@ export function assembleScore(pages: PageResult[], ppq = 480, opts: { instrument
       }
       tsKnown = true;
     };
-    if (ts) setTs(ts);
+    if (ts) {
+      setTs(ts);
+      meterTrusted = !!ts.fromSign || !syms.some((x) => x.timeSigUnreadable);
+    }
     else if (!tsKnown && syms.some((s) => s.timeSigUnreadable) && !pageWarned.ts.has(si.page.index)) {
       pageWarned.ts.add(si.page.index);
       warnings.push(`Page ${si.page.index + 1}: a time signature could not be read; assumed 4/4.`);
@@ -478,8 +693,14 @@ export function assembleScore(pages: PageResult[], ppq = 480, opts: { instrument
       // 4/4 is the default meter (never overridden); 2/2 is trusted only when it came from a printed cut-time sign, a "2 over 2" read
       // from digits can be a mis-read and is overridable like any other
       const printedDigits = !!ts && !ts.fromSign && !(ts.numerator === 4 && ts.denominator === 4);
-      const inferred = inferMeter(sysInfos, sIdx, explicitTsSys, ppq, curTs, measureNo === 0, !ts);
-      if (inferred && !ts) {
+      // the loose short-piece guess (2 agreeing bars, low confidence) is for a score with no printed signature at all, so only the first
+      // system may make it: a later system with a couple of odd bars (cue notes in a chord chart) must not change the meter
+      const inferred = inferMeter(sysInfos, sIdx, explicitTsSys, ppq, curTs, measureNo === 0, !ts && (sIdx === 0 || !meterTrusted));
+      // Once a meter is established it only changes where a signature is printed (even if unreadable: a courtesy signature at the
+      // end of the previous system, a key change, a signature glyph that could not be read) - never between two plain
+      // continuation lines, where a few misread durations would otherwise flip 3/4 to 4/4 and back.
+      const sigEvent = !!pendingSig || (sIdx > 0 && effKey[sIdx] !== effKey[sIdx - 1]) || syms.some((x) => x.timeSigUnreadable) || si.changes.some((c) => c.measure < si.count);
+      if (inferred && !ts && (!tsKnown || sigEvent || !meterTrusted)) {
         setTs(inferred.ts);
         warnings.push(
           inferred.lowConfidence
@@ -537,7 +758,9 @@ export function assembleScore(pages: PageResult[], ppq = 480, opts: { instrument
       }
       return sym.clef;
     });
-    for (const sym of syms) {
+    for (const [k, sym0] of syms.entries()) {
+      // the first staff's rests may have been corrected from the printed bar numbers (the aligned copy in `si.lead`)
+      const sym = k === 0 && si.lead ? si.lead : sym0;
       const mrs = sym.multiRests ?? [];
       mrs.forEach((mr) => {
         if (!mr.guessed) return;
@@ -550,9 +773,9 @@ export function assembleScore(pages: PageResult[], ppq = 480, opts: { instrument
       });
     }
     const nextPending = new Map<string, { midi: number; step: number }>();
+    const firstDone = new Set<string>();
     const sysFirstMeasure = measureNo;
     const sysMeasureInfo: { tick: number; length: number; beat: number }[] = [];
-    const firstDone = new Set<string>();
 
     for (let m = 0; m < Math.max(1, si.count); m++) {
       // signature changes after a mid-staff double barline apply from this measure
@@ -633,16 +856,20 @@ export function assembleScore(pages: PageResult[], ppq = 480, opts: { instrument
         slashMeasures++;
         slashList.push({ index: measureNo, tick: start, length: nominal });
       }
+      for (const { label } of si.tempos.get(m) ?? []) tempoHits.push({ mark: markOf.get(label)!, tick: start, first: si.page.index === 0 });
       for (const { label, frac } of si.chords.get(m) ?? []) {
         // snap to the nearest beat of the measure (beats of the time signature's denominator unit)
         // (never coarser than a quarter note: in cut time / 2/2 a chord on beat 2 of a quarter pulse must not be moved to a half-note boundary)
         const beat = pulseTicks(ppq, curTs.denominator);
         const nBeats = Math.max(1, Math.round(nominal / beat));
         const tick = start + Math.min(nBeats - 1, Math.max(0, Math.round(frac * nBeats))) * beat;
-        const prev = chordList[chordList.length - 1];
+        const withhold = label.ocrConf !== undefined && !si.textChords && badChordPages.has(si.page.index);
+        const target = withhold ? suppressedList : chordList;
+        if (withhold) suppressedPages.add(si.page.index + 1);
+        const prev = target[target.length - 1];
         if (prev && prev.tick === tick) {
-          if (label.confidence > prev.confidence) chordList[chordList.length - 1] = toEntry(label, measureNo, tick);
-        } else chordList.push(toEntry(label, measureNo, tick));
+          if (label.confidence > prev.confidence) target[target.length - 1] = toEntry(label, measureNo, tick);
+        } else target.push(toEntry(label, measureNo, tick));
       }
       sysMeasureInfo.push({ tick: start, length: nominal, beat: pulseTicks(ppq, curTs.denominator) });
       cursor += nominal;
@@ -650,7 +877,7 @@ export function assembleScore(pages: PageResult[], ppq = 480, opts: { instrument
     }
     {
       const g = systemGeometry(si, sysFirstMeasure, sysMeasureInfo);
-      if (g) systemGeoms.push(g);
+      if (g) systemGeoms.push(si.textChords ? { ...g, textLayer: true } : g);
     }
     // a tie that ran off the end of this system whose partner never appeared at the start of the next one
     unmatchedTies += pendingTie.size;
@@ -673,11 +900,18 @@ export function assembleScore(pages: PageResult[], ppq = 480, opts: { instrument
   if (slashMeasures > 0) warnings.push(`${slashMeasures} chord-slash measure(s) were found; they have no notes and are listed in meta.omrSlashMeasures.`);
   if (unmatchedTies > 0) warnings.push(`${unmatchedTies} tie(s) running off the end of a line had no matching note at the start of the next line.`);
   if (trackList.every((t) => t.notes.length === 0)) warnings.push('No notes were recognized. Try a cleaner, higher-resolution scan.');
+  if (suppressedPages.size > 0) {
+    const pg = [...suppressedPages].sort((a, b) => a - b);
+    warnings.push(`Chord symbols on page${pg.length === 1 ? '' : 's'} ${pg.join(', ')} could not be read reliably and ${pg.length === 1 ? 'was' : 'were'} left out; chords are inferred from the notes. "Read chord symbols with Claude" (Settings, AI chord reading) can read hand-lettered chord fonts.`);
+  }
+  applyTempoMarks(score, tempoHits, warnings);
   score.meta.warnings = [...new Set(warnings)];
   score.meta.omrBoxes = boxes;
   score.meta.omrMeasures = measureNo;
   if (slashList.length > 0) score.meta.omrSlashMeasures = slashList;
   if (chordList.length > 0) score.meta.omrChords = chordList;
+  // debugging only: not chords as far as the app is concerned
+  if (suppressedList.length > 0) score.meta.omrChordsSuppressed = suppressedList;
   if (systemGeoms.length > 0) score.meta.omrSystems = systemGeoms;
   return score;
 }
@@ -745,10 +979,45 @@ export interface OmrChordEntry {
   text: string;
   chord: { root: string; quality: string; bass?: string };
   confidence: number;
+  /** OCR diagnostics (absent for text-layer chords): needed character repairs / tesseract's own confidence */
+  repaired?: boolean;
+  ocrConf?: number;
+}
+
+/**
+ * Turn printed tempo marks into `score.tempos` (quarter-note bpm). The first numeric mark applies from tick 0; later numeric
+ * marks that differ add a tempo change. Tempo words ("Allegro") are used only when no numeric mark exists anywhere, and only
+ * from the first system of the score. Always leaves a warning so the reading can be checked.
+ */
+function applyTempoMarks(score: Score, hits: { mark: TempoMark; tick: number; first: boolean }[], warnings: string[]) {
+  const numeric = hits.filter((h) => h.mark.kind === 'numeric').sort((a, b) => a.tick - b.tick || a.mark.x - b.mark.x);
+  const fmt = (n: number) => String(Math.round(n * 10) / 10);
+  if (numeric.length > 0) {
+    const tempos: { tick: number; bpm: number }[] = [];
+    for (const h of numeric) {
+      const prev = tempos[tempos.length - 1];
+      if (prev && Math.abs(prev.bpm - h.mark.bpm) <= 0.02 * prev.bpm) continue; // the mark repeated (page headers)
+      if (prev && prev.tick === h.tick) continue;
+      const tick = prev ? h.tick : 0;
+      tempos.push({ tick, bpm: h.mark.bpm });
+      const u = h.mark.unit;
+      warnings.push(
+        `Tempo read as \u2669 = ${fmt(h.mark.bpm)}${tick > 0 ? ` from tick ${tick}` : ''} (from '${h.mark.description}')` +
+          (u?.source === 'assumed' ? '; the beat unit could not be recognized, so a quarter note was assumed. Check the tempo.' : '.'),
+      );
+    }
+    score.tempos = tempos;
+    return;
+  }
+  const word = hits.find((h) => h.mark.kind === 'word' && h.first);
+  if (word) {
+    score.tempos = [{ tick: 0, bpm: word.mark.bpm }];
+    warnings.push(`Tempo guessed as \u2669 = ${fmt(word.mark.bpm)} from ${word.mark.description}; no tempo number is printed. Check the tempo.`);
+  }
 }
 
 function toEntry(l: ChordLabel, measure: number, tick: number): OmrChordEntry {
-  return { measure, tick, text: l.text, chord: l.chord, confidence: l.confidence };
+  return { measure, tick, text: l.text, chord: l.chord, confidence: l.confidence, ...(l.ocrConf !== undefined ? { repaired: l.repaired, ocrConf: l.ocrConf } : {}) };
 }
 
 /**
@@ -779,7 +1048,7 @@ function placeChords(labels: ChordLabel[], sym: StaffSymbols, d: number, count: 
     const k = slotOf(label.x);
     const x0 = k === 0 ? sym.musicStart : bars[k - 1];
     const x1 = k < bars.length ? bars[k] : (sym.staffRight ?? x0 + 1);
-    const left = label.x - 0.25 * d * label.text.length;
+    const left = label.left ?? label.x - 0.25 * d * label.text.length;
     const frac = Math.max(0, Math.min(0.999, (left - x0) / Math.max(1, x1 - x0)));
     const cnt = multi.get(k) ?? 1;
     let off = offsetOfSlot(k);
@@ -808,7 +1077,7 @@ function placeChords(labels: ChordLabel[], sym: StaffSymbols, d: number, count: 
  * differs from the current meter. Returns undefined when the evidence is thin or already matches `cur`.
  */
 function inferMeter(
-  sysInfos: { staffIds: number[]; measures: Map<number, RhythmEvent[][]>; count: number }[],
+  sysInfos: { staffIds: number[]; measures: Map<number, RhythmEvent[][]>; slashN?: Map<number, number[]>; count: number }[],
   from: number,
   explicit: boolean[],
   ppq: number,
@@ -817,20 +1086,30 @@ function inferMeter(
   allowShort = false,
 ): { ts: { numerator: number; denominator: number }; bars: number; total: number; lowConfidence?: boolean } | undefined {
   const nominalCur = (ppq * 4 * cur.numerator) / cur.denominator;
-  const totals: number[] = [];
-  for (let k = from; k < sysInfos.length && k <= from + 3 && totals.length < 3; k++) {
+  let totals: number[] = [];
+  // chord-slash bars give a weaker meter signal (one slash per beat, and a slash is easy to miss or double): they are used only
+  // when the pooled systems hold too few bars with notes to decide
+  const slashTotals: number[] = [];
+  for (let k = from; k < sysInfos.length && k <= from + 3 && Math.max(totals.length, slashTotals.length) < 3; k++) {
     if (k > from && explicit[k]) break;
     const si = sysInfos[k];
     const last = k === sysInfos.length - 1;
     for (const st of si.staffIds) {
       const ms = si.measures.get(st) ?? [];
+      const sl = si.slashN?.get(st);
       ms.forEach((ev, m) => {
+        // a chord-slash bar holds one slash per beat: its slash count is its length (2..7 quarter-note beats)
+        if (ev.length === 0 && sl && sl[m] >= 2 && sl[m] <= 7) {
+          slashTotals.push(sl[m] * ppq);
+          return;
+        }
         if (!ev.some((e) => e.kind === 'cluster')) return;
         if ((firstSystem && k === from && m === 0) || (last && m === ms.length - 1)) return; // pickup / final bar may be short
         totals.push(rawMeasureTotal(ev, ppq, nominalCur));
       });
     }
   }
+  if (totals.length < 3 && slashTotals.length >= 3) totals = slashTotals;
   const simple: Record<string, [number, number]> = { '2': [2, 4], '3': [3, 4], '4': [4, 4], '1.5': [3, 8], '4.5': [9, 8], '6': [12, 8] };
   const lowTs = (t: number, bars: number) => {
     const m = simple[String(t / ppq)];
@@ -894,6 +1173,7 @@ export async function recognizeImageDataWithChords(pages: RawImage[], opts: Reco
     for (let i = 0; i < results.length; i++) {
       try {
         await readPageChords(results[i], {
+          textItems: opts.textItems?.[i],
           onProgress: (p) => opts.onProgress?.({ stage: p.stage, fraction: 0.8 + (0.17 * (i + p.fraction)) / results.length, page: i }),
         });
       } catch {

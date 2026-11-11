@@ -1,4 +1,4 @@
-import { measuresOf } from '../core';
+import { measuresOf, pulseTicks } from '../core';
 import type { Score } from '../core';
 import type { ChordEvent } from './detect';
 
@@ -20,7 +20,7 @@ export function strumChart(score: Score, chords: ChordEvent[]): StrumLine[] {
     const group = ms.slice(i, i + 4);
     const cells: StrumLine['cells'] = [];
     for (const m of group) {
-      const beat = (score.ppq * 4) / m.timeSignature.denominator;
+      const beat = pulseTicks(score.ppq, m.timeSignature.denominator);
       for (let t = m.startTick; t < m.endTick - 1e-6; t += beat) {
         // chords read from the printed score hold until the next chord; inferred ones only mark their own beat
         const ev =

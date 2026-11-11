@@ -152,7 +152,8 @@ type PageCanvas = CanvasImageSource & { width: number; height: number };
  * Systems that fail keep their OCR chords; at most one warning is added for all failures.
  */
 export async function readChordsWithClaude(score: Score, pages: PageCanvas[], opts: ReadChordsOptions): Promise<Score> {
-  const systems: OmrSystem[] = score.meta.omrSystems ?? [];
+  // chords read from the PDF text layer are exact: those systems are neither sent to Claude nor overwritten by it
+  const systems: OmrSystem[] = (score.meta.omrSystems ?? []).filter((s) => !s.textLayer);
   if (systems.length === 0) return score;
   const results = new Map<number, OmrChord[]>();
   let failed = 0;
@@ -205,11 +206,15 @@ export async function readChordsWithClaude(score: Score, pages: PageCanvas[], op
     if (merged.length > 0) score.meta.omrChords = merged;
     else delete score.meta.omrChords;
   }
+  if (failed === 0 && results.size > 0 && score.meta.warnings) {
+    // every system was read by Claude: the "chords left out" warning from the OCR stage no longer applies
+    score.meta.warnings = score.meta.warnings.filter((w) => !w.startsWith('Chord symbols on page'));
+  }
   if (failed > 0) {
     const all = failed >= total;
     score.meta.warnings = [
       ...(score.meta.warnings ?? []),
-      `Claude could not read the chord symbols${all ? '' : ` for ${failed} of ${total} system${total === 1 ? '' : 's'}`}: ${firstFailure ?? 'an unexpected error occurred'}. The OCR chord labels were used${all ? '' : ' for those systems'}.`,
+      `Claude could not read the chord symbols${all ? '' : ` for ${failed} of ${total} system${total === 1 ? '' : 's'}`}: ${firstFailure ?? 'an unexpected error occurred'}. ${score.meta.omrChordsSuppressed ? 'Chords are inferred from the notes' : `The OCR chord labels were used${all ? '' : ' for those systems'}`}.`,
     ];
   }
   return score;

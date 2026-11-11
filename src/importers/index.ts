@@ -115,8 +115,9 @@ export async function importFile(file: File, opts: ImportOptions = {}): Promise<
       progress('Loading OCR engine', 0.05);
       const omr = await import('../omr');
       progress('Rendering PDF pages', 0.1);
-      const pages = await omr.renderPdfPages(buf);
+      const { canvases: pages, textItems } = await omr.renderPdfPagesWithText(buf);
       score = await omr.recognizeScore(pages, {
+        textItems,
         onProgress: (p) => progress(p.stage, 0.15 + 0.85 * p.fraction),
         defaultClef: opts?.defaultClef,
         instrument: opts?.instrument,

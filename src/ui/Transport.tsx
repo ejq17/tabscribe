@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { measuresOf, scoreLength } from '../core';
+import { measuresOf, pulseTicks, scoreLength } from '../core';
 import { useStore } from '../store';
 import { guitarNotes } from '../store/ops';
 import { restartIfPlaying, seekTo, setVolume, stopPlayback, togglePlay } from './playback';
@@ -21,7 +21,7 @@ export default function Transport() {
   const pos = (() => {
     const m = measures.find((mm) => pb.tick >= mm.startTick && pb.tick < mm.endTick) ?? measures[measures.length - 1];
     if (!m) return '1.1';
-    const beatTicks = (score.ppq * 4) / m.timeSignature.denominator;
+    const beatTicks = pulseTicks(score.ppq, m.timeSignature.denominator);
     return `${m.index + 1}.${Math.floor((pb.tick - m.startTick) / beatTicks) + 1}`;
   })();
 

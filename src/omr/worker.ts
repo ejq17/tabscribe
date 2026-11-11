@@ -7,6 +7,7 @@ export interface WorkerRequest {
   pages: { width: number; height: number; buffer: ArrayBuffer }[];
   defaultClef?: RecognizeOptions['defaultClef'];
   instrument?: RecognizeOptions['instrument'];
+  textItems?: RecognizeOptions['textItems'];
 }
 
 export type WorkerResponse =
@@ -28,6 +29,7 @@ ctx.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
     const score = await recognizeImageDataWithChords(pages, {
       defaultClef: msg.defaultClef,
       instrument: msg.instrument,
+      textItems: msg.textItems,
       onProgress: (p) => ctx.postMessage({ type: 'progress', ...p } satisfies WorkerResponse),
     });
     ctx.postMessage({ type: 'done', score } satisfies WorkerResponse);

@@ -1,4 +1,4 @@
-import { measuresOf, pitchClass, NOTE_NAMES_SHARP, NOTE_NAMES_FLAT, keySignatureAt } from '../core';
+import { measuresOf, pulseTicks, pitchClass, NOTE_NAMES_SHARP, NOTE_NAMES_FLAT, keySignatureAt } from '../core';
 import type { Score } from '../core';
 
 export interface ChordEvent {
@@ -42,7 +42,7 @@ function windowsOf(score: Score, resolution: 'beat' | 'measure' | 'half'): Windo
   for (const m of measuresOf(score)) {
     const len = m.endTick - m.startTick;
     let step = len;
-    if (resolution === 'beat') step = (score.ppq * 4) / m.timeSignature.denominator;
+    if (resolution === 'beat') step = pulseTicks(score.ppq, m.timeSignature.denominator);
     else if (resolution === 'half') step = len / 2;
     if (step <= 0) step = len;
     for (let t = m.startTick; t < m.endTick - 1e-6; t += step) {

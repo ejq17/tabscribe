@@ -31,7 +31,9 @@ function normalizeSymbols(s: string): string {
     .replace(/[♯]/g, '#')
     .replace(/[♮]/g, '')
     .replace(/[–−—]/g, '-')
-    .replace(/[()\s]/g, '')
+    .replace(/[△▵]/g, 'Δ')
+    .replace(/[\u0300-\u036f^]/g, '')
+    .replace(/[()\s,;]/g, '')
     .replace(/[∅Ø]/g, 'ø')
     .replace(/[º˚]/g, '°');
 }
@@ -82,6 +84,23 @@ function strictParse(s: string): ParsedChord | null {
   return { root, quality: q, ...(bass ? { bass } : {}) };
 }
 
+/**
+ * Exact parse for text that is already machine-readable (a PDF text layer): no OCR repairs, so words such as "Coda" or "Dal"
+ * never turn into chords. Understands the same grammar, plus spelled-out qualities ("Maj7", "Min7", "Dim", "Aug", "Sus4").
+ */
+export function parseChordExact(raw: string): ParseResult | null {
+  const s = normalizeSymbols(raw.trim())
+    .replace(/^([A-G][b#]?)(?:Maj|MAJ)/, '$1maj')
+    .replace(/^([A-G][b#]?)(?:Min|MIN)/, '$1min')
+    .replace(/Dim/g, 'dim')
+    .replace(/Aug/g, 'aug')
+    .replace(/Sus/g, 'sus')
+    .replace(/Add/g, 'add');
+  if (!s || s.length > 16) return null;
+  const c = strictParse(s);
+  return c ? { chord: c, text: fmt(c), confidence: 1 } : null;
+}
+
 const fmt = (c: ParsedChord) => `${c.root}${c.quality}${c.bass ? '/' + c.bass : ''}`;
 
 /**
@@ -96,8 +115,16 @@ const SUBS: Record<string, string[]> = {
 /** characters that may simply be dropped (OCR noise inside a symbol) */
 const DROPPABLE = /[^A-Gabdijmnsu0-9/]/;
 
+/**
+ * A chord starts with a letter A-G: a leading digit or bracket is a letter read wrongly. Hand-lettered jazz fonts give "C7" as
+ * "07" / "(7" and "B7" as "87" (a raised flat after the B is usually lost too, so this only restores the ROOT; the repair is
+ * charged the same as any other edit, so a clean read always wins).
+ */
+const ROOT_SUBS: Record<string, string[]> = { '8': ['B'], '0': ['C', 'D'], '6': ['G'], '(': ['C'], '[': ['C'], O: ['C', 'D'], Q: ['G'] };
+
 function neighbours(s: string): { t: string; cost: number }[] {
   const out: { t: string; cost: number }[] = [];
+  if (s.length >= 2 && ROOT_SUBS[s[0]]) for (const r of ROOT_SUBS[s[0]]) out.push({ t: r + s.slice(1), cost: 0.22 });
   for (let i = 1; i < s.length; i++) {
     const ch = s[i];
     for (const r of SUBS[ch] ?? []) out.push({ t: s.slice(0, i) + r + s.slice(i + 1), cost: 0.12 });

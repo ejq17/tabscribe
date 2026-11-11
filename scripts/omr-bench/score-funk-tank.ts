@@ -28,8 +28,10 @@ for (const n of notes) {
 }
 // The assembler may emit SOUNDING pitch (guitar: written treble minus an octave) while the truth below is written pitch.
 // Pick the octave offset (0 or -12) that explains more of the emitted notes overall.
+// (only the bars that have a truth: over the whole 190-bar part the 442 notes cover both octaves, the tie went to "written" and
+// every pitch scored 0/24 although the sounding pitches were exactly the truth minus an octave)
 const histo = new Map<number, number>();
-for (const n of notes) histo.set(n.pitch, (histo.get(n.pitch) ?? 0) + 1);
+for (const [m, g] of got) if (m in EXPECT) for (const x of g) histo.set(x.p, (histo.get(x.p) ?? 0) + 1);
 const expectedPitches = Object.values(EXPECT).flat().map(([name]) => midi(name));
 const hits = (off: number) => expectedPitches.filter((p) => histo.has(p + off)).length;
 const OCT = hits(-12) > hits(0) ? -12 : 0;
